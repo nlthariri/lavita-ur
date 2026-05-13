@@ -1,0 +1,372 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  OWNER
+  MANAGER
+  EMPLOYEE
+  ACCOUNTANT
+}
+
+enum WorkEntryType {
+  WORK
+  SICK
+  LEAVE
+  HOLIDAY
+}
+
+enum ObjectionStatus {
+  OPEN
+  APPROVED
+  REJECTED
+}
+
+enum AtwSeverity {
+  WARNING
+  CRITICAL
+}
+
+enum AtwViolationType {
+  DAILY_LIMIT
+  WEEKLY_LIMIT
+  SIXTEEN_WEEK_AVERAGE
+  REST_PERIOD
+}
+
+enum EmailEventType {
+  HOURS_REGISTERED
+  OBJECTION_SUBMITTED
+  OBJECTION_RESOLVED
+  MISSING_ENTRY_REMINDER
+  ATW_LIMIT_WARNING
+  ATW_LIMIT_EXCEEDED
+  ACCOUNT_CREATED
+  MONTHLY_REPORT
+  PASSWORD_RESET
+}
+
+model Organization {
+  id                       String   @id @default(cuid())
+  name                     String
+  kvkNumber                String?
+  vestigingsnummer         String?
+  loonheffingennummer      String?
+  defaultTimezone          String   @default("Europe/Amsterdam")
+  atwDailyMaxMinutes       Int      @default(720)
+  atwWeeklyMaxMinutes      Int      @default(3600)
+  atwWeeklyWarningMinutes  Int      @default(2880)
+  atwAverage16WeekMinutes  Int      @default(2880)
+  minimumRestMinutes       Int      @default(660)
+  retentionYears           Int      @default(7)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  users                    User[]
+  teams                    Team[]
+  projects                 Project[]
+  workEntries              WorkEntry[]
+  objections               Objection[]
+  atwViolations            AtwViolation[]
+  emailTemplates           EmailTemplate[]
+  emailEvents              EmailEvent[]
+  auditEvents              AuditEvent[]
+  workEntryHistory         WorkEntryHistory[]
+  outboxEvents             OutboxEvent[]
+  systemJobRuns            SystemJobRun[]
+
+  @@map("organizations")
+}
+
+model Team {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  managerId      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  manager      User?        @relation("TeamManager", fields: [managerId], references: [id])
+  members      User[]       @relation("TeamMembers")
+  workEntries  WorkEntry[]
+
+  @@unique([managerId])
+  @@index([organizationId])
+  @@map("teams")
+}
+
+model User {
+  id               String   @id @default(cuid())
+  organizationId   String
+  teamId           String?
+  email            String   @unique
+  fullName         String
+  role             UserRole
+  isActive         Boolean  @default(true)
+  passwordHash     String?
+  mfaEnabled       Boolean  @default(false)
+  mfaSecret        String?
+  sessionVersion   Int      @default(1)
+  employmentStart  DateTime?
+  employmentEnd    DateTime?
+  hourlyRateCents  Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  organization       Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  team               Team?           @relation("TeamMembers", fields: [teamId], references: [id])
+  managedTeam        Team?           @relation("TeamManager")
+  registeredEntries  WorkEntry[]     @relation("RegisteredBy")
+  ownEntries         WorkEntry[]     @relation("EmployeeEntries")
+  objections         Objection[]     @relation("ObjectionBy")
+  objectionDecisions Objection[]     @relation("ObjectionDecisionBy")
+  atwViolations      AtwViolation[]
+  emailEvents        EmailEvent[]
+  emailPreference    UserEmailPreference?
+  auditEvents        AuditEvent[]
+  workEntryHistory   WorkEntryHistory[]
+
+  @@index([organizationId])
+  @@index([teamId])
+  @@map("users")
+}
+
+model UserEmailPreference {
+  id                       String   @id @default(cuid())
+  userId                   String   @unique
+  allowHoursRegistered     Boolean  @default(true)
+  allowMissingEntryReminder Boolean @default(true)
+  allowAtwLimitWarning     Boolean  @default(true)
+  allowMonthlyReport       Boolean  @default(true)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_email_preferences")
+}
+
+model Project {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  code           String?
+  isActive       Boolean  @default(true)
+  hourlyRateCents Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  workEntries   WorkEntry[]
+
+  @@index([organizationId])
+  @@map("projects")
+}
+
+model WorkEntry {
+  id                String        @id @default(cuid())
+  organizationId    String
+  employeeId        String
+  teamId            String?
+  projectId         String?
+  registeredById    String
+  entryDate         DateTime
+  startAt           DateTime
+  endAt             DateTime
+  pauseMinutes      Int
+  netMinutes        Int
+  type              WorkEntryType @default(WORK)
+  note              String?
+  isFinalized       Boolean       @default(true)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  employee     User         @relation("EmployeeEntries", fields: [employeeId], references: [id], onDelete: Cascade)
+  team         Team?        @relation(fields: [teamId], references: [id])
+  project      Project?     @relation(fields: [projectId], references: [id])
+  registeredBy User         @relation("RegisteredBy", fields: [registeredById], references: [id], onDelete: Cascade)
+  objections   Objection[]
+  history      WorkEntryHistory[]
+
+  @@index([organizationId, employeeId, entryDate])
+  @@index([teamId, entryDate])
+  @@unique([employeeId, entryDate, startAt])
+  @@map("work_entries")
+}
+
+model Objection {
+  id                 String          @id @default(cuid())
+  organizationId     String
+  workEntryId        String
+  submittedById      String
+  reviewedById       String?
+  motivation         String
+  managerResponse    String?
+  status             ObjectionStatus @default(OPEN)
+  submittedAt        DateTime        @default(now())
+  reviewedAt         DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  workEntry     WorkEntry    @relation(fields: [workEntryId], references: [id], onDelete: Cascade)
+  submittedBy   User         @relation("ObjectionBy", fields: [submittedById], references: [id], onDelete: Cascade)
+  reviewedBy    User?        @relation("ObjectionDecisionBy", fields: [reviewedById], references: [id])
+
+  @@index([organizationId, status])
+  @@index([workEntryId])
+  @@map("objections")
+}
+
+model AtwViolation {
+  id              String           @id @default(cuid())
+  organizationId  String
+  userId          String
+  workEntryId     String?
+  violationType   AtwViolationType
+  severity        AtwSeverity
+  periodStart     DateTime
+  periodEnd       DateTime
+  currentMinutes  Int
+  thresholdMinutes Int
+  details         String?
+  createdAt       DateTime         @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, createdAt])
+  @@map("atw_violations")
+}
+
+model EmailTemplate {
+  id             String         @id @default(cuid())
+  organizationId String
+  type           EmailEventType
+  subject        String
+  bodyHtml       String
+  bodyText       String
+  isEnabled      Boolean        @default(true)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, type])
+  @@map("email_templates")
+}
+
+model EmailEvent {
+  id             String         @id @default(cuid())
+  organizationId String
+  userId         String?
+  type           EmailEventType
+  recipient      String
+  subject        String
+  bodyText       String
+  status         String         @default("queued")
+  errorMessage   String?
+  sentAt         DateTime?
+  createdAt      DateTime       @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         User?        @relation(fields: [userId], references: [id])
+
+  @@index([organizationId, type, createdAt])
+  @@map("email_events")
+}
+
+model AuditEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  actorId        String
+  action         String
+  targetType     String
+  targetId       String
+  beforeData     Json?
+  afterData      Json?
+  requestId      String?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  actor        User         @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@map("audit_events")
+}
+
+model WorkEntryHistory {
+  id             String   @id @default(cuid())
+  organizationId String
+  workEntryId    String
+  version        Int
+  changedById    String
+  changeReason   String
+  startAt        DateTime
+  endAt          DateTime
+  pauseMinutes   Int
+  netMinutes     Int
+  note           String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  workEntry     WorkEntry    @relation(fields: [workEntryId], references: [id], onDelete: Cascade)
+  changedBy     User         @relation(fields: [changedById], references: [id], onDelete: Restrict)
+
+  @@unique([workEntryId, version])
+  @@index([organizationId, createdAt])
+  @@index([changedById, createdAt])
+  @@map("work_entry_history")
+}
+
+model OutboxEvent {
+  id             String   @id @default(cuid())
+  organizationId String
+  aggregateType  String
+  aggregateId    String
+  eventType      String
+  idempotencyKey String   @unique
+  payload        Json
+  status         String   @default("queued")
+  retryCount     Int      @default(0)
+  nextAttemptAt  DateTime @default(now())
+  sentAt         DateTime?
+  failedAt       DateTime?
+  errorMessage   String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([status, nextAttemptAt])
+  @@index([organizationId, eventType, createdAt])
+  @@map("outbox_events")
+}
+
+model SystemJobRun {
+  id             String   @id @default(cuid())
+  organizationId String?
+  jobName        String
+  status         String
+  startedAt      DateTime @default(now())
+  finishedAt     DateTime?
+  durationMs     Int?
+  rowsAffected   Int      @default(0)
+  details        Json?
+  errorMessage   String?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([jobName, createdAt])
+  @@index([status, createdAt])
+  @@map("system_job_runs")
+}

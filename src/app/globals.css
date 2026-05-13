@@ -1,26 +1,49 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --canvas: #ffffff;
+  --primary: #111111;
+  --surface-card: #f5f5f5;
+  --border-soft: #e5e7eb;
+  --footer: #101010;
+  --text-body: #27272a;
+  --status-success-bg: #dcfce7;
+  --status-success-fg: #166534;
+  --status-warning-bg: #fef9c3;
+  --status-warning-fg: #854d0e;
+  --status-draft-bg: #f4f4f5;
+  --status-draft-fg: #3f3f46;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-background: var(--canvas);
+  --color-foreground: var(--text-body);
+  --font-sans: var(--font-inter);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--canvas);
+  color: var(--text-body);
+  font-family: var(--font-inter), sans-serif;
+}
+
+.card {
+  background: var(--surface-card);
+  border: 0.5px solid var(--border-soft);
+  border-radius: 12px;
+}
+
+.badge-vastgesteld {
+  background: var(--status-success-bg);
+  color: var(--status-success-fg);
+}
+
+.badge-bezwaar {
+  background: var(--status-warning-bg);
+  color: var(--status-warning-fg);
+}
+
+.badge-concept {
+  background: var(--status-draft-bg);
+  color: var(--status-draft-fg);
 }

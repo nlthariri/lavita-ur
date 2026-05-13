@@ -1,36 +1,91 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# La Vita Urenregistratie
 
-## Getting Started
+Enterprise webapplicatie voor urenregistratie, bezwaarafhandeling en automatische ATW-bewaking conform opdrachtspecificatie v1.1.
 
-First, run the development server:
+## Productiestack
+
+- Next.js 16 + TypeScript
+- MySQL + Prisma
+- SMTP mailverzending met template-engine
+- Cloud86 hosting met Plesk (Node.js + MySQL/phpMyAdmin)
+
+## Belangrijk voor Cloud86/Plesk
+
+Deze applicatie is server-side en kan niet als statische FTP-site draaien.
+
+- Subdomein: bijvoorbeeld `uren.jouwdomein.nl`
+- Database: MySQL via Plesk/phpMyAdmin
+- Runtime: Node.js 20+
+- Uptime: 24/7 via PM2 + health/readiness checks
+- Schaling: stel `WEB_CONCURRENCY` in voor PM2 cluster-instances
+
+## Eenmalige installatie (aanbevolen)
+
+1. Maak `.env` op basis van `.env.example` en vul productiegegevens in.
+2. Voer daarna uit in de projectmap:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run install:cloud86
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Dit script doet:
+- dependencies installeren
+- Prisma client genereren
+- schema toepassen via migraties (`db:migrate:deploy`)
+- build maken
+- optionele bootstrap van eerste eigenaar
+- PM2 start/reload (als PM2 beschikbaar is)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Deploy bij nieuwe release
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run deploy:cloud86
+```
 
-## Learn More
+## 24/7 operatie-commando's
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run start:pm2
+npm run reload:pm2
+npm run stop:pm2
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Health endpoints:
+- Liveness: `/api/health`
+- Readiness: `/api/ready`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Ops taken
 
-## Deploy on Vercel
+- Dagelijkse backup:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+npm run backup:db
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Wekelijkse retentie/pseudonimisering:
+
+```bash
+npm run retention:pseudonymize
+```
+
+- Maandrapportage:
+
+```bash
+npm run reports:monthly
+```
+
+## Documentatie
+
+- Cloud86/Plesk installatie: `docs/cloud86-plesk-installatie.md`
+- 24/7 operations runbook: `docs/ops-24-7.md`
+- Architectuuroverzicht: `docs/architectuur.md`
+
+## Lokale ontwikkeling
+
+```bash
+npm install
+cp .env.example .env
+npm run db:generate
+npm run db:migrate:deploy
+npm run dev
+```
