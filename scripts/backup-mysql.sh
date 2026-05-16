@@ -29,18 +29,29 @@ while IFS='=' read -r key value; do
     DB_NAME) DB_NAME="$value" ;;
   esac
 done < <(
-  node -e '
-    const url = new URL(process.env.DATABASE_URL);
-    if (url.protocol !== "mysql:") {
-      throw new Error("DATABASE_URL moet met mysql:// beginnen");
+  php -r '
+    $raw = getenv("DATABASE_URL");
+    if ($raw === false || $raw === "") {
+        fwrite(STDERR, "DATABASE_URL ontbreekt\n");
+        exit(1);
     }
-    const clean = (v) => (v || "").replace(/\n/g, "");
-    const dbName = (url.pathname || "").replace(/^\//, "");
-    console.log(`DB_USER=${clean(decodeURIComponent(url.username || ""))}`);
-    console.log(`DB_PASS=${clean(decodeURIComponent(url.password || ""))}`);
-    console.log(`DB_HOST=${clean(url.hostname || "localhost")}`);
-    console.log(`DB_PORT=${clean(url.port || "3306")}`);
-    console.log(`DB_NAME=${clean(dbName)}`);
+    $parts = parse_url($raw);
+    if ($parts === false || ($parts["scheme"] ?? "") !== "mysql") {
+        fwrite(STDERR, "DATABASE_URL moet met mysql:// beginnen\n");
+        exit(1);
+    }
+    $user = rawurldecode($parts["user"] ?? "");
+    $pass = rawurldecode($parts["pass"] ?? "");
+    $host = $parts["host"] ?? "localhost";
+    $port = (string) ($parts["port"] ?? 3306);
+    $path = $parts["path"] ?? "";
+    $dbName = ltrim($path, "/");
+
+    echo "DB_USER=".str_replace("\n", "", $user).PHP_EOL;
+    echo "DB_PASS=".str_replace("\n", "", $pass).PHP_EOL;
+    echo "DB_HOST=".str_replace("\n", "", $host).PHP_EOL;
+    echo "DB_PORT=".str_replace("\n", "", $port).PHP_EOL;
+    echo "DB_NAME=".str_replace("\n", "", $dbName).PHP_EOL;
   '
 )
 
