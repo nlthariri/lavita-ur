@@ -9,6 +9,7 @@ use Carbon\Carbon;
  * Geport vanuit src/lib/atw/engine.ts
  *
  * Controles:
+ * - PAUSE_REQUIRED: bruto werktijd > 5,5 uur (330 min) en pauze < 30 min
  * - DAILY_LIMIT: netto uren van de dag ≥ daglimiet (12 uur = 720 min)
  * - WEEKLY_WARNING: weektotaal nadert weeklimiet (48 uur = 2880 min)
  * - WEEKLY_LIMIT: weektotaal overschrijdt weeklimiet (60 uur = 3600 min)
@@ -18,6 +19,10 @@ use Carbon\Carbon;
 class AtwEngine
 {
     private const MINIMUM_REST_MINUTES = 660; // 11 uur
+
+    private const PAUSE_REQUIRED_GROSS_THRESHOLD_MINUTES = 330; // 5,5 uur
+
+    private const MINIMUM_PAUSE_MINUTES = 30;
 
     /**
      * @param array{start_at: string, end_at: string, net_minutes: int} $proposedShift
@@ -32,6 +37,20 @@ class AtwEngine
         $proposedStart = Carbon::parse($proposedShift['start_at']);
         $proposedEnd = Carbon::parse($proposedShift['end_at']);
         $proposedNet = (int) $proposedShift['net_minutes'];
+
+        // --- 0. Pauzeplicht (>5,5u bruto vereist ≥30 min pauze) ---
+        $grossMinutes = (int) $proposedStart->diffInMinutes($proposedEnd);
+        $pauseMinutes = max(0, $grossMinutes - $proposedNet);
+
+        if ($grossMinutes > self::PAUSE_REQUIRED_GROSS_THRESHOLD_MINUTES && $pauseMinutes < self::MINIMUM_PAUSE_MINUTES) {
+            $signals[] = [
+                'type' => 'PAUSE_REQUIRED',
+                'severity' => 'critical',
+                'message' => 'Bij meer dan 5,5 uur werken is minimaal 30 minuten pauze verplicht.',
+                'threshold_minutes' => self::MINIMUM_PAUSE_MINUTES,
+                'current_minutes' => $pauseMinutes,
+            ];
+        }
 
         // --- 1. Daglimiet ---
         if ($proposedNet >= $policy['daily_max_minutes']) {

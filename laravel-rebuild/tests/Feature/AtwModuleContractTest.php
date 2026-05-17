@@ -75,8 +75,19 @@ class AtwModuleContractTest extends TestCase
         $response->assertStatus(200)
             ->assertJsonPath('has_critical', true);
 
-        $signalTypes = array_column($response->json('signals'), 'type');
+        $signals = $response->json('signals');
+        $signalTypes = array_column($signals, 'type');
         $this->assertContains('DAILY_LIMIT', $signalTypes);
+
+        // Elk signaal heeft een `code`-key (mag null zijn voor non-blocking signalen)
+        foreach ($signals as $signal) {
+            $this->assertArrayHasKey('code', $signal);
+        }
+
+        // DAILY_LIMIT signaal moet API-foutcode `ATW_DAILY_MAX_EXCEEDED` exposen
+        $dailyLimitSignal = collect($signals)->firstWhere('type', 'DAILY_LIMIT');
+        $this->assertNotNull($dailyLimitSignal);
+        $this->assertSame('ATW_DAILY_MAX_EXCEEDED', $dailyLimitSignal['code']);
     }
 
     public function test_validate_atw_requires_all_mandatory_fields(): void
@@ -123,8 +134,19 @@ class AtwModuleContractTest extends TestCase
         $response->assertStatus(200)
             ->assertJsonPath('has_critical', true);
 
-        $signalTypes = array_column($response->json('signals'), 'type');
+        $signals = $response->json('signals');
+        $signalTypes = array_column($signals, 'type');
         $this->assertContains('REST_PERIOD', $signalTypes);
+
+        // Elk signaal heeft een `code`-key (mag null zijn voor non-blocking signalen)
+        foreach ($signals as $signal) {
+            $this->assertArrayHasKey('code', $signal);
+        }
+
+        // REST_PERIOD signaal moet API-foutcode `ATW_REST_PERIOD_VIOLATED` exposen
+        $restPeriodSignal = collect($signals)->firstWhere('type', 'REST_PERIOD');
+        $this->assertNotNull($restPeriodSignal);
+        $this->assertSame('ATW_REST_PERIOD_VIOLATED', $restPeriodSignal['code']);
     }
 
     public function test_employee_cannot_validate_atw_for_other_employee(): void

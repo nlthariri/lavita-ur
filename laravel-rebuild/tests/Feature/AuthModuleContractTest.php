@@ -245,7 +245,7 @@ class AuthModuleContractTest extends TestCase
             'organization_id' => $org->id,
             'user_id' => $createdUserId,
             'recipient' => 'new.employee@lavita.nl',
-            'type' => 'account_created',
+            'type' => 'welcome_email',
             'status' => 'queued',
             'initiator_actor_id' => $owner->id,
         ]);

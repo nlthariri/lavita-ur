@@ -24,14 +24,63 @@ class AtwEngineTest extends TestCase
 
     public function test_no_signals_for_normal_shift(): void
     {
+        // 8u werkdag (510 min bruto, 30 min pauze, 480 min netto) — pauzeplicht voldaan
         $proposed = [
             'start_at' => '2026-05-11T08:00:00+00:00',
-            'end_at' => '2026-05-11T16:00:00+00:00',
+            'end_at' => '2026-05-11T16:30:00+00:00',
             'net_minutes' => 480,
         ];
 
         $signals = $this->engine->evaluate($proposed, [], $this->defaultPolicy);
         $this->assertEmpty($signals);
+    }
+
+    public function test_pause_required_critical_when_gross_above_330_and_pause_below_30(): void
+    {
+        // Bruto 360 min (>330), netto 350 min ⇒ pauze 10 min (<30)
+        $proposed = [
+            'start_at' => '2026-05-11T08:00:00+00:00',
+            'end_at' => '2026-05-11T14:00:00+00:00',
+            'net_minutes' => 350,
+        ];
+
+        $signals = $this->engine->evaluate($proposed, [], $this->defaultPolicy);
+        $types = array_column($signals, 'type');
+        $this->assertContains('PAUSE_REQUIRED', $types);
+
+        $pauseSignal = array_filter($signals, fn ($s) => $s['type'] === 'PAUSE_REQUIRED');
+        $pauseSignal = reset($pauseSignal);
+        $this->assertSame('critical', $pauseSignal['severity']);
+        $this->assertSame(30, $pauseSignal['threshold_minutes']);
+        $this->assertSame(10, $pauseSignal['current_minutes']);
+    }
+
+    public function test_pause_not_required_at_exact_threshold_of_330_minutes(): void
+    {
+        // Bruto exact 330 min — drempel is "> 330", dus geen signal
+        $proposed = [
+            'start_at' => '2026-05-11T08:00:00+00:00',
+            'end_at' => '2026-05-11T13:30:00+00:00',
+            'net_minutes' => 330,
+        ];
+
+        $signals = $this->engine->evaluate($proposed, [], $this->defaultPolicy);
+        $types = array_column($signals, 'type');
+        $this->assertNotContains('PAUSE_REQUIRED', $types);
+    }
+
+    public function test_pause_not_required_when_pause_meets_minimum(): void
+    {
+        // Bruto 420 min, netto 390 min ⇒ pauze 30 min (=minimum), geen signal
+        $proposed = [
+            'start_at' => '2026-05-11T08:00:00+00:00',
+            'end_at' => '2026-05-11T15:00:00+00:00',
+            'net_minutes' => 390,
+        ];
+
+        $signals = $this->engine->evaluate($proposed, [], $this->defaultPolicy);
+        $types = array_column($signals, 'type');
+        $this->assertNotContains('PAUSE_REQUIRED', $types);
     }
 
     public function test_daily_limit_critical_when_net_minutes_gte_720(): void

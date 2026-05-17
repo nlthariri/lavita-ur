@@ -20,6 +20,7 @@ class AtwViolation extends Model
         'current_minutes',
         'threshold_minutes',
         'details',
+        'superseded_at',
     ];
 
     protected $casts = [
@@ -27,6 +28,7 @@ class AtwViolation extends Model
         'period_end' => 'date',
         'current_minutes' => 'integer',
         'threshold_minutes' => 'integer',
+        'superseded_at' => 'datetime',
     ];
 
     protected $table = 'atw_violations';

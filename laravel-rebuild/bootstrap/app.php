@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\BookkeeperReadonly;
 use App\Http\Middleware\FailClosedThrottle;
 use App\Http\Middleware\InternalApiAuth;
 use Illuminate\Foundation\Application;
@@ -18,8 +19,9 @@ return Application::configure(basePath: dirname(__DIR__))
     ])
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
-            'internal.auth'    => InternalApiAuth::class,
-            'throttle.secure'  => FailClosedThrottle::class,
+            'internal.auth'       => InternalApiAuth::class,
+            'throttle.secure'     => FailClosedThrottle::class,
+            'bookkeeper.readonly' => BookkeeperReadonly::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

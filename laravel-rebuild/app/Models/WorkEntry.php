@@ -19,6 +19,8 @@ class WorkEntry extends Model
         'net_minutes',
         'type',
         'note',
+        'project_id',
+        'cost_center_id',
         'is_finalized',
     ];
 
@@ -29,6 +31,8 @@ class WorkEntry extends Model
         'is_finalized' => 'boolean',
         'pause_minutes' => 'integer',
         'net_minutes' => 'integer',
+        'project_id' => 'integer',
+        'cost_center_id' => 'integer',
     ];
 
     public function organization(): BelongsTo
@@ -49,5 +53,15 @@ class WorkEntry extends Model
     public function team(): BelongsTo
     {
         return $this->belongsTo(Team::class);
+    }
+
+    public function project(): BelongsTo
+    {
+        return $this->belongsTo(Project::class);
+    }
+
+    public function costCenter(): BelongsTo
+    {
+        return $this->belongsTo(CostCenter::class);
     }
 }

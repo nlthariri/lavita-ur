@@ -5,8 +5,10 @@ use App\Http\Controllers\Transitie\AtwModule\AtwModuleController;
 use App\Http\Controllers\Transitie\AuditModule\AuditModuleController;
 use App\Http\Controllers\Transitie\AuthModule\AuthModuleController;
 use App\Http\Controllers\Transitie\AuthModule\PasswordResetController;
+use App\Http\Controllers\Transitie\CostCentersModule\CostCentersModuleController;
 use App\Http\Controllers\Transitie\EmailFlowsModule\EmailFlowsModuleController;
 use App\Http\Controllers\Transitie\ObjectionsModule\ObjectionsModuleController;
+use App\Http\Controllers\Transitie\ProjectsModule\ProjectsModuleController;
 use App\Http\Controllers\Transitie\ReportsModule\ReportsModuleController;
 use App\Http\Controllers\Transitie\SystemModule\HealthController;
 use App\Http\Controllers\Transitie\WorkEntriesModule\WorkEntriesModuleController;
@@ -33,8 +35,8 @@ Route::middleware(['throttle.secure:mfa'])->group(function () {
 Route::get('/health', [HealthController::class, 'getHealth']);
 Route::get('/ready', [HealthController::class, 'getReady']);
 
-// Beveiligde interne routes (bearer token + rate-limiter)
-Route::middleware(['internal.auth', 'throttle:api'])->group(function () {
+// Beveiligde interne routes (bearer token + rate-limiter + boekhouder read-only)
+Route::middleware(['internal.auth', 'throttle:api', 'bookkeeper.readonly'])->group(function () {
     // Auth
     Route::post('/auth/logout', [AuthModuleController::class, 'postAuthLogout']);
     Route::post('/auth/mfa/setup', [AuthModuleController::class, 'postAuthMfaSetup']);
@@ -43,6 +45,23 @@ Route::middleware(['internal.auth', 'throttle:api'])->group(function () {
     // Werkregels
     Route::post('/internal/work-entries', [WorkEntriesModuleController::class, 'postInternalWorkEntries']);
     Route::get('/internal/work-entries', [WorkEntriesModuleController::class, 'getInternalWorkEntries']);
+    Route::get('/internal/work-entries/{id}', [WorkEntriesModuleController::class, 'getInternalWorkEntryById'])->whereNumber('id');
+    Route::patch('/internal/work-entries/{id}', [WorkEntriesModuleController::class, 'patchInternalWorkEntryById'])->whereNumber('id');
+    Route::delete('/internal/work-entries/{id}', [WorkEntriesModuleController::class, 'deleteInternalWorkEntryById'])->whereNumber('id');
+
+    // Projecten (Requirement 2.4, 2.5)
+    Route::get('/internal/projects', [ProjectsModuleController::class, 'getInternalProjects']);
+    Route::get('/internal/projects/{id}', [ProjectsModuleController::class, 'getInternalProjectById']);
+    Route::post('/internal/projects', [ProjectsModuleController::class, 'postInternalProjects']);
+    Route::patch('/internal/projects/{id}', [ProjectsModuleController::class, 'patchInternalProjectById']);
+    Route::delete('/internal/projects/{id}', [ProjectsModuleController::class, 'deleteInternalProjectById']);
+
+    // Kostenplaatsen (Requirement 2.6)
+    Route::get('/internal/cost-centers', [CostCentersModuleController::class, 'getInternalCostCenters']);
+    Route::get('/internal/cost-centers/{id}', [CostCentersModuleController::class, 'getInternalCostCenterById']);
+    Route::post('/internal/cost-centers', [CostCentersModuleController::class, 'postInternalCostCenters']);
+    Route::patch('/internal/cost-centers/{id}', [CostCentersModuleController::class, 'patchInternalCostCenterById']);
+    Route::delete('/internal/cost-centers/{id}', [CostCentersModuleController::class, 'deleteInternalCostCenterById']);
 
     // Bezwaren
     Route::post('/internal/objections', [ObjectionsModuleController::class, 'postInternalObjections']);
@@ -66,5 +85,3 @@ Route::middleware(['internal.auth', 'throttle:api'])->group(function () {
     // Audit
     Route::get('/internal/audit/export', [AuditModuleController::class, 'getAuditExport']);
 });
-
-

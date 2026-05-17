@@ -497,6 +497,34 @@ class EmailFlowsModuleContractTest extends TestCase
             ->assertJsonPath('errors.type.0', 'Ongeldig e-mailtemplate type.');
     }
 
+    public function test_owner_can_upsert_and_fetch_welcome_email_template(): void
+    {
+        $ownerToken = $this->createBearerToken($this->owner);
+
+        $this->putJson('/api/internal/email/templates/welcome_email', [
+            'subject_template' => 'Welkom {{ full_name }}',
+            'body_text_template' => 'Beste {{ full_name }}, uw account is gereed. Login: {{ login_url }}',
+            'body_html_template' => '<p>Beste {{ full_name }}, uw account is gereed. <a href="{{ login_url }}">Inloggen</a></p>',
+            'is_active' => true,
+        ], ['Authorization' => 'Bearer '.$ownerToken])
+            ->assertStatus(200)
+            ->assertJsonPath('status', 'ok')
+            ->assertJsonPath('template.type', 'welcome_email')
+            ->assertJsonPath('template.subject_template', 'Welkom {{ full_name }}');
+
+        $this->getWithAuth($this->owner, '/api/internal/email/templates/welcome_email')
+            ->assertStatus(200)
+            ->assertJsonPath('type', 'welcome_email')
+            ->assertJsonPath('subject_template', 'Welkom {{ full_name }}');
+
+        $this->assertDatabaseHas('email_templates', [
+            'organization_id' => $this->org->id,
+            'type' => 'welcome_email',
+            'subject_template' => 'Welkom {{ full_name }}',
+            'is_active' => 1,
+        ]);
+    }
+
     public function test_dispatch_escapes_html_in_template_vars_for_html_body(): void
     {
         $ownerToken = $this->createBearerToken($this->owner);

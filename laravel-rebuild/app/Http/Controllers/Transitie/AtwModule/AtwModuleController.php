@@ -25,6 +25,16 @@ class AtwModuleController extends Controller
 
         $result = $this->atwService->validateProposedShift($validated, (int) $request->user()->id);
 
+        // Verrijk elk signaal met de publieke ATW-foutcode (`code`) zodat de frontend
+        // exact dezelfde code ziet als POST/PATCH zou retourneren bij een 422.
+        // Voor non-blocking signaaltypes (`WEEKLY_WARNING`, `SIXTEEN_WEEK_AVERAGE`)
+        // is `code` expliciet `null` om de non-blocking aard zichtbaar te maken.
+        // Requirements: 4.8, 4.9
+        $result['signals'] = array_map(
+            fn (array $signal): array => $signal + ['code' => $this->atwService->signalApiCode((string) ($signal['type'] ?? ''))],
+            $result['signals']
+        );
+
         return response()->json($result);
     }
 

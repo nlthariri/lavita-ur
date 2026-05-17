@@ -7,6 +7,7 @@ use App\Models\Team;
 use App\Models\User;
 use App\Models\WorkEntry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class WorkEntriesModuleContractTest extends TestCase
@@ -98,8 +99,57 @@ class WorkEntriesModuleContractTest extends TestCase
         $this->assertSame(240, $response->json('net_minutes'));
     }
 
-    public function test_long_shift_requires_minimum_60_minutes_pause(): void
+    public function test_long_shift_requires_minimum_30_minutes_pause(): void
     {
+        // 7:00–13:30 = 390 minuten bruto (>330 = 5,5u). Met slechts 15
+        // minuten pauze blijft de pauze-tijd onder de wettelijke
+        // ondergrens van 30 minuten en moet de werkregel worden
+        // geweigerd met code `ATW_PAUSE_REQUIRED`.
+        // Requirements: 4.1
+        $response = $this->postWithAuth($this->owner, '/api/internal/work-entries', [
+            'employee_id' => $this->employee->id,
+            'entry_date' => '2026-05-15',
+            'start_time' => '07:00',
+            'end_time' => '13:30',
+            'pause_minutes' => 15,
+        ]);
+
+        $response->assertStatus(422)
+            ->assertJsonPath('code', 'ATW_PAUSE_REQUIRED')
+            ->assertJsonPath('error', 'Bij meer dan 5,5 uur werken is minimaal 30 minuten pauze verplicht.')
+            ->assertJsonPath('errors.pause_minutes.0', 'Bij meer dan 5,5 uur werken is minimaal 30 minuten pauze verplicht.')
+            ->assertJsonPath('meta.gross_minutes', 390)
+            ->assertJsonPath('meta.pause_minutes', 15)
+            ->assertJsonPath('meta.threshold_minutes', 330)
+            ->assertJsonPath('meta.required_pause_minutes', 30);
+
+        // Requirement 4.7: elke 422 op de pauze-check produceert één
+        // `ATW_VIOLATION_BLOCKED`-audit-event met type, current/threshold
+        // minutes en actor/employee ids in `before_data`.
+        $audit = DB::table('audit_events')
+            ->where('action', 'ATW_VIOLATION_BLOCKED')
+            ->where('actor_id', $this->owner->id)
+            ->orderByDesc('id')
+            ->first();
+
+        $this->assertNotNull($audit, 'Verwachtte een ATW_VIOLATION_BLOCKED-audit-event voor de pauze-422.');
+        $this->assertSame((int) $this->org->id, (int) $audit->organization_id);
+        $this->assertSame('work_entry', $audit->target_type);
+        $this->assertSame('', (string) $audit->target_id);
+
+        $before = json_decode((string) $audit->before_data, true);
+        $this->assertSame('PAUSE_REQUIRED', $before['signal_type']);
+        $this->assertSame(15, $before['current_minutes']);
+        $this->assertSame(30, $before['threshold_minutes']);
+        $this->assertSame((int) $this->employee->id, $before['employee_id']);
+        $this->assertNull(json_decode((string) $audit->after_data, true));
+    }
+
+    public function test_long_shift_accepts_30_minutes_pause(): void
+    {
+        // 7:00–13:30 met 30 minuten pauze is exact de wettelijke
+        // ondergrens en moet onder het nieuwe 30-min-minimum slagen.
+        // Requirements: 4.1
         $response = $this->postWithAuth($this->owner, '/api/internal/work-entries', [
             'employee_id' => $this->employee->id,
             'entry_date' => '2026-05-15',
@@ -108,8 +158,8 @@ class WorkEntriesModuleContractTest extends TestCase
             'pause_minutes' => 30,
         ]);
 
-        $response->assertStatus(422)
-            ->assertJsonPath('errors.pause_minutes.0', 'Bij meer dan 5,5 uur werken is minimaal 60 minuten pauze verplicht.');
+        $response->assertStatus(201);
+        $this->assertSame(360, $response->json('net_minutes'));
     }
 
     public function test_manager_can_only_register_entries_for_own_team(): void
@@ -319,14 +369,20 @@ class WorkEntriesModuleContractTest extends TestCase
         ]);
 
         $response->assertStatus(403)
-            ->assertJsonPath('message', 'Boekhouder heeft alleen read-only rapportage toegang.');
+            ->assertJsonPath('error', 'Boekhouder heeft alleen read-only toegang.')
+            ->assertJsonPath('code', 'READ_ONLY_ROLE');
     }
 
-    // ─── Regressietests: ATW critical → employee, cross-org isolatie ─────────
+    // ─── Regressietests: ATW critical → 422 + geen DB-write, cross-org isolatie ──
 
-    public function test_atw_daily_limit_critical_dispatches_email_to_employee_as_well(): void
+    public function test_atw_daily_limit_critical_blocks_create_with_422(): void
     {
-        // 13 uur bruto - 60 min pauze = 720 min netto = exact daglimiet (critical)
+        // Per Requirement 4.4 moet een dienst met netto werktijd ≥720 min
+        // (12u) hard worden geweigerd. 13 uur bruto - 60 min pauze = 720
+        // min netto = exact daglimiet (DAILY_LIMIT critical). De helper
+        // `AtwService::throwOnCriticalSignals` werpt nu 422 vóór de DB-
+        // transactie, zodat geen werkregel én geen `atw_daily_limit`-mail
+        // achterblijft.
         $response = $this->postWithAuth($this->owner, '/api/internal/work-entries', [
             'employee_id' => $this->employee->id,
             'entry_date' => '2026-05-19',
@@ -335,23 +391,57 @@ class WorkEntriesModuleContractTest extends TestCase
             'pause_minutes' => 60,   // 720 min netto = daglimiet
         ]);
 
-        $response->assertStatus(201);
+        $response->assertStatus(422)
+            ->assertJsonPath('code', 'ATW_DAILY_MAX_EXCEEDED')
+            ->assertJsonPath('meta.signal_type', 'DAILY_LIMIT')
+            ->assertJsonPath('meta.current_minutes', 720)
+            ->assertJsonPath('meta.threshold_minutes', 720);
 
-        // DAILY_LIMIT is critical → e-mail moet ook naar employee gaan
-        $this->assertDatabaseHas('email_outbox', [
+        // Geen werkregel opgeslagen (rollback vóór DB-transactie).
+        $this->assertDatabaseMissing('work_entries', [
+            'employee_id' => $this->employee->id,
+            'entry_date' => '2026-05-19',
+        ]);
+
+        // Geen `atw_daily_limit`-mail in de outbox: de dispatch hangt aan
+        // het signaal-pad bij een succesvolle create en wordt nu vóór de
+        // transactie geblokkeerd.
+        $this->assertDatabaseMissing('email_outbox', [
             'organization_id' => $this->org->id,
             'recipient' => $this->employee->email,
             'type' => 'atw_daily_limit',
-            'status' => 'queued',
         ]);
 
-        // Owner en manager ontvangen ook het signaal
-        $this->assertDatabaseHas('email_outbox', [
-            'organization_id' => $this->org->id,
-            'recipient' => $this->owner->email,
-            'type' => 'atw_daily_limit',
-            'status' => 'queued',
-        ]);
+        // Requirement 4.7: elke ATW-422 produceert minstens één
+        // `ATW_VIOLATION_BLOCKED`-audit-event met `signal_type`,
+        // `current_minutes`, `threshold_minutes` en `employee_id`. Bij
+        // create is `target_id` een lege string omdat de werkregel nog
+        // geen id heeft.
+        $auditRows = DB::table('audit_events')
+            ->where('action', 'ATW_VIOLATION_BLOCKED')
+            ->where('actor_id', $this->owner->id)
+            ->orderBy('id')
+            ->get();
+
+        $this->assertGreaterThanOrEqual(1, $auditRows->count(), 'Verwachtte een ATW_VIOLATION_BLOCKED-audit-event voor de daglimiet-422.');
+
+        $dailyAudit = $auditRows->first(function ($row) {
+            $before = json_decode((string) $row->before_data, true);
+
+            return is_array($before) && ($before['signal_type'] ?? null) === 'DAILY_LIMIT';
+        });
+
+        $this->assertNotNull($dailyAudit, 'Verwachtte een audit-event met signal_type=DAILY_LIMIT.');
+        $this->assertSame((int) $this->org->id, (int) $dailyAudit->organization_id);
+        $this->assertSame('work_entry', $dailyAudit->target_type);
+        $this->assertSame('', (string) $dailyAudit->target_id);
+
+        $before = json_decode((string) $dailyAudit->before_data, true);
+        $this->assertSame('DAILY_LIMIT', $before['signal_type']);
+        $this->assertSame(720, $before['current_minutes']);
+        $this->assertSame(720, $before['threshold_minutes']);
+        $this->assertSame((int) $this->employee->id, $before['employee_id']);
+        $this->assertNull(json_decode((string) $dailyAudit->after_data, true));
     }
 
     public function test_cross_org_work_entry_blocked_for_manager(): void

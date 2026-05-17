@@ -144,7 +144,22 @@ class AuthModuleController extends Controller
             ]);
         }
 
-        $created = $this->accountProvisioningService->create($validated, (int) $actor->id);
+        try {
+            $created = $this->accountProvisioningService->create($validated, (int) $actor->id);
+        } catch (\RuntimeException $e) {
+            // Requirement 5.4: outbox-fout bij welkomstmail → HTTP 500
+            // met machine-leesbare code `WELCOME_EMAIL_FAILED`. De DB-
+            // transactie in de service heeft de account-aanmaak reeds
+            // teruggedraaid.
+            if ($e->getMessage() === 'WELCOME_EMAIL_FAILED') {
+                return response()->json([
+                    'error' => 'Welkomstmail kon niet worden gequeued; account-aanmaak teruggedraaid.',
+                    'code' => 'WELCOME_EMAIL_FAILED',
+                ], 500);
+            }
+
+            throw $e;
+        }
 
         return response()->json([
             'status' => 'ok',

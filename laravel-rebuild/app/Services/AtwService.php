@@ -7,14 +7,173 @@ use App\Models\Organization;
 use App\Models\User;
 use App\Models\WorkEntry;
 use Carbon\Carbon;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Validation\ValidationException;
 
 class AtwService
 {
+    /**
+     * Mapping van AtwEngine signal-type naar publieke ATW-foutcode.
+     * Alleen kritieke signalen die HTTP 422 moeten produceren staan in deze map.
+     * `WEEKLY_WARNING` (severity warning) en `SIXTEEN_WEEK_AVERAGE` zijn bewust
+     * niet opgenomen omdat zij non-blocking zijn (Req 4.2, 4.6, 4.9).
+     *
+     * @var array<string, string>
+     */
+    private const CRITICAL_SIGNAL_CODE_MAP = [
+        'PAUSE_REQUIRED' => 'ATW_PAUSE_REQUIRED',
+        'DAILY_LIMIT' => 'ATW_DAILY_MAX_EXCEEDED',
+        'WEEKLY_LIMIT' => 'ATW_WEEKLY_MAX_EXCEEDED',
+        'REST_PERIOD' => 'ATW_REST_PERIOD_VIOLATED',
+    ];
+
     public function __construct(
         private readonly AtwEngine $engine,
         private readonly EmailOutboxService $emailOutboxService,
+        private readonly AuditService $auditService,
     ) {
+    }
+
+    /**
+     * Geef de publieke ATW-foutcode voor een AtwEngine signal-type, of `null`
+     * wanneer het signaal non-blocking is (`WEEKLY_WARNING`, `SIXTEEN_WEEK_AVERAGE`).
+     *
+     * Wordt door {@see AtwModuleController::postInternalWorkEntriesValidateAtw}
+     * aangeroepen zodat de validate-atw-response per signal dezelfde code
+     * meegeeft als POST/PATCH zou retourneren bij een 422. `null` markeert
+     * expliciet dat het signaal niet leidt tot een blokkering.
+     *
+     * Requirements: 4.8, 4.9
+     */
+    public function signalApiCode(string $type): ?string
+    {
+        return self::CRITICAL_SIGNAL_CODE_MAP[$type] ?? null;
+    }
+
+    /**
+     * Werp HTTP 422 met de juiste ATW-foutcode wanneer kritieke signalen
+     * (PAUSE_REQUIRED, DAILY_LIMIT, WEEKLY_LIMIT, REST_PERIOD) aanwezig zijn.
+     *
+     * Warnings (`WEEKLY_WARNING`) en `SIXTEEN_WEEK_AVERAGE` blijven non-blocking
+     * en worden door deze helper genegeerd.
+     *
+     * Het response-formaat volgt het bestaande patroon van
+     * `WorkEntriesService::buildPauseRequiredException`:
+     *
+     * ```json
+     * {
+     *   "error":  "<primary message>",
+     *   "code":   "<primary code>",
+     *   "errors": { "<code>": ["<message>"] },
+     *   "meta":   { "signal_type": "...", "current_minutes": 0, "threshold_minutes": 0 }
+     * }
+     * ```
+     *
+     * Het "primaire" signaal is het eerste kritieke signaal in de input-volgorde.
+     *
+     * Wanneer `$context` `organization_id`, `actor_id` en `employee_id`
+     * bevat, wordt vóór het throwen per kritiek signaal één audit-event
+     * `ATW_VIOLATION_BLOCKED` geschreven via {@see AuditService::record}.
+     * `target_id` is `null` op het create-pad (nog geen werkregel-id) en
+     * wordt door de audit-laag opgeslagen als lege string omdat
+     * `audit_events.target_id` non-NULL is. Bij update bevat het de
+     * werkregel-id als string.
+     *
+     * Requirements: 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.9
+     *
+     * @param array<int, array{type?: string, severity?: string, message?: string, current_minutes?: int, threshold_minutes?: int}> $signals
+     * @param array{organization_id?: int, actor_id?: int, employee_id?: int, target_id?: int|string|null} $context
+     */
+    public function throwOnCriticalSignals(array $signals, array $context = []): void
+    {
+        $critical = [];
+        foreach ($signals as $signal) {
+            $type = (string) ($signal['type'] ?? '');
+            if ($type === '' || ! array_key_exists($type, self::CRITICAL_SIGNAL_CODE_MAP)) {
+                continue;
+            }
+
+            $critical[] = $signal;
+        }
+
+        if ($critical === []) {
+            return;
+        }
+
+        $this->recordBlockedSignals($critical, $context);
+
+        $primary = $critical[0];
+        $primaryType = (string) $primary['type'];
+        $primaryCode = self::CRITICAL_SIGNAL_CODE_MAP[$primaryType];
+        $primaryMessage = (string) ($primary['message'] ?? '');
+
+        $errors = [];
+        foreach ($critical as $signal) {
+            $code = self::CRITICAL_SIGNAL_CODE_MAP[(string) $signal['type']];
+            $errors[$code][] = (string) ($signal['message'] ?? '');
+        }
+
+        throw new HttpResponseException(
+            response()->json([
+                'error' => $primaryMessage,
+                'code' => $primaryCode,
+                'errors' => $errors,
+                'meta' => [
+                    'signal_type' => $primaryType,
+                    'current_minutes' => (int) ($primary['current_minutes'] ?? 0),
+                    'threshold_minutes' => (int) ($primary['threshold_minutes'] ?? 0),
+                ],
+            ], 422)
+        );
+    }
+
+    /**
+     * Schrijf één `ATW_VIOLATION_BLOCKED` audit-event per kritiek signaal.
+     *
+     * Wordt alleen uitgevoerd wanneer alle drie de verplichte
+     * context-velden (`organization_id`, `actor_id`, `employee_id`)
+     * aanwezig zijn — zo blijft de helper bruikbaar als pure validator
+     * (bijvoorbeeld in unit-tests of vooraf-validatie zonder request-
+     * context) zónder bijwerking op `audit_events`.
+     *
+     * Het `target_id`-veld accepteert zowel `null` (create-pad) als een
+     * werkregel-id (update-pad). De {@see AuditService::record}-laag
+     * cast de waarde naar string; voor `null` wordt dat een lege string
+     * omdat de DB-kolom non-NULL is.
+     *
+     * Requirements: 4.7
+     *
+     * @param array<int, array{type?: string, current_minutes?: int, threshold_minutes?: int}> $criticalSignals
+     * @param array{organization_id?: int, actor_id?: int, employee_id?: int, target_id?: int|string|null} $context
+     */
+    private function recordBlockedSignals(array $criticalSignals, array $context): void
+    {
+        if (! isset($context['organization_id'], $context['actor_id'], $context['employee_id'])) {
+            return;
+        }
+
+        $organizationId = (int) $context['organization_id'];
+        $actorId = (int) $context['actor_id'];
+        $employeeId = (int) $context['employee_id'];
+        $targetId = array_key_exists('target_id', $context) ? $context['target_id'] : null;
+        $targetIdString = $targetId === null ? '' : (string) $targetId;
+
+        foreach ($criticalSignals as $signal) {
+            $this->auditService->record([
+                'organization_id' => $organizationId,
+                'actor_id' => $actorId,
+                'action' => 'ATW_VIOLATION_BLOCKED',
+                'target_type' => 'work_entry',
+                'target_id' => $targetIdString,
+                'before_data' => [
+                    'signal_type' => (string) ($signal['type'] ?? ''),
+                    'current_minutes' => (int) ($signal['current_minutes'] ?? 0),
+                    'threshold_minutes' => (int) ($signal['threshold_minutes'] ?? 0),
+                    'employee_id' => $employeeId,
+                ],
+                'after_data' => null,
+            ]);
+        }
     }
 
     public function validateProposedShift(array $input, int $requesterId): array
