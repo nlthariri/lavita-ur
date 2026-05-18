@@ -1,27 +1,7 @@
 {{--
-  Hoofd-applayout — LaVita Urenregistratie.
-
-  Bron: `.kiro/specs/lavita-urenregistratie/design.md` (Components and Interfaces > Grid)
-  en `requirements.md` 6.13 + NFR-1 / NFR-3 / NFR-4 / NFR-10.
-
-  Verantwoordelijkheden:
-  - Document-skelet (`<html lang="nl">`, charset, viewport, CSRF, title).
-  - Volledig WCAG 2.1 AA-conform skip-to-main-link als eerste focuseerbaar element.
-  - Semantische landmarks: `<header>`, `<nav>`, `<main>`, `<footer>` (+ optionele
-    `<aside>` voor de inhoudsopgave op desktop).
-  - 3-koloms grid sidebar 240px / content max 720px / TOC 200px op desktop ≥1280,
-    2-koloms (sidebar 240 / fluid content) op tablet 768-1279, 1-koloms met
-    hamburger op mobiel <768.
-  - Vite-asset injectie voor Tailwind (`resources/css/app.css`) en JS-bundle.
-  - Livewire-3 styles/scripts via `@livewireStyles` / `@livewireScripts`.
-  - Globale focus-state `border 2px solid #00d4a4` (focus-zichtbaar — NFR-1).
-
-  Slot-mechaniek:
-  - Child-views gebruiken `@extends('layouts.app')` + `@section('content') ... @endsection`.
-  - Optionele extra head-content via `@push('head') ... @endpush`.
-  - Voor Livewire-component-pagina's bestaat een aparte layout op
-    `components/layouts/app.blade.php` (taak 8.5); deze layout is bedoeld voor
-    klassieke Blade-pagina's met `@yield`.
+  Livewire-3 component layout (slot-based).
+  Identiek aan layouts/app.blade.php maar met {{ $slot }} i.p.v. @yield.
+  Navigatie is rol-gebaseerd en verborgen op auth-pagina's.
 --}}
 <!DOCTYPE html>
 <html lang="nl" class="h-full">
@@ -31,9 +11,8 @@
     <meta name="color-scheme" content="light">
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
-    <title>@yield('title', 'LaVita Urenregistratie')</title>
+    <title>{{ $title ?? 'LaVita Urenregistratie' }}</title>
 
-    {{-- Geist Mono — Inter wordt via @fontsource/inter in resources/css/app.css ingeladen. --}}
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -44,14 +23,12 @@
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     @livewireStyles
 
-    {{-- Globale focus-zichtbaarheid (NFR-1: border 2px #00d4a4). --}}
     <style>
         :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
             outline: 2px solid #00d4a4;
             outline-offset: 2px;
             border-radius: 4px;
         }
-        /* Bij muis-klik geen ring tonen (focus-visible houdt het tot toetsenbord). */
         :where(a, button, input, select, textarea, summary, [tabindex]):focus:not(:focus-visible) {
             outline: none;
         }
@@ -60,7 +37,6 @@
     @stack('head')
 </head>
 <body class="h-full min-h-screen bg-canvas font-sans text-body-md text-ink antialiased">
-    {{-- Skip-link: eerste focuseerbaar element op de pagina (WCAG 2.4.1). --}}
     <a
         href="#main"
         class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-primary focus:px-4 focus:py-2 focus:text-on-primary focus:no-underline"
@@ -69,13 +45,11 @@
     </a>
 
     <div class="mx-auto flex min-h-screen max-w-content flex-col px-4 tablet:px-gutter">
-        {{-- Sitehoofd: titel + plek voor gebruikersmenu. --}}
         <header
             role="banner"
             class="flex items-center justify-between gap-4 border-b border-hairline py-4"
         >
             <div class="flex items-center gap-3">
-                {{-- Mobiele hamburger — alleen tonen als ingelogd --}}
                 @auth
                 <button
                     type="button"
@@ -85,18 +59,7 @@
                     aria-label="Navigatie openen of sluiten"
                     aria-controls="primary-navigation"
                 >
-                    <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        stroke-width="2"
-                        stroke-linecap="round"
-                        stroke-linejoin="round"
-                        class="h-5 w-5"
-                        aria-hidden="true"
-                        focusable="false"
-                    >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5" aria-hidden="true" focusable="false">
                         <line x1="4" y1="6" x2="20" y2="6"></line>
                         <line x1="4" y1="12" x2="20" y2="12"></line>
                         <line x1="4" y1="18" x2="20" y2="18"></line>
@@ -134,12 +97,6 @@
             </div>
         </header>
 
-        {{--
-          App-grid:
-            mobiel  <768  : 1-koloms (sidebar verschuift naar collapsible drawer)
-            tablet  768+  : 2-koloms (sidebar 240 / fluid content)
-            desktop 1280+ : 3-koloms (sidebar 240 / content max 720 / TOC 200)
-        --}}
         <div
             @if (auth()->check())
                 class="grid flex-1 grid-cols-1 gap-6 py-6 tablet:grid-cols-[theme(spacing.sidebar)_minmax(0,1fr)] tablet:gap-gutter desktop:grid-cols-[theme(spacing.sidebar)_minmax(0,720px)_theme(spacing.toc)]"
@@ -147,7 +104,6 @@
                 class="flex flex-1 flex-col gap-6 py-6"
             @endif
         >
-            {{-- Hoofdnavigatie. Alleen tonen als ingelogd. --}}
             @auth
             <nav
                 id="primary-navigation"
@@ -162,8 +118,6 @@
                     @php
                         $userRole = (string) (auth()->user()->role ?? '');
 
-                        // Navigatie-items met rol-restrictie
-                        // 'roles' => null betekent: zichtbaar voor iedereen
                         $navItems = [
                             ['label' => 'Dashboard',    'href' => '/dashboard',       'roles' => null],
                             ['label' => 'Uren',         'href' => '/uren/week',       'roles' => ['owner', 'manager']],
@@ -181,7 +135,6 @@
                     @endphp
                     @foreach ($navItems as $item)
                         @php
-                            // Skip items die niet voor deze rol zijn
                             if ($item['roles'] !== null && !in_array($userRole, $item['roles'], true)) {
                                 continue;
                             }
@@ -202,28 +155,21 @@
             </nav>
             @endauth
 
-            {{-- Hoofdinhoud — id matcht skip-link. tabindex=-1 zodat focus erop kan landen. --}}
             <main
                 id="main"
                 tabindex="-1"
                 class="min-w-0 max-w-content focus:outline-none desktop:max-w-[720px]"
             >
-                @hasSection('content')
-                    @yield('content')
-                @else
-                    {{ $slot ?? '' }}
-                @endif
+                {{ $slot }}
             </main>
 
-            {{-- Inhoudsopgave (TOC) — alleen op desktop ≥1280. --}}
+            @auth
             <aside
                 aria-label="Inhoudsopgave"
                 class="hidden desktop:block"
             >
-                @hasSection('toc')
-                    @yield('toc')
-                @endif
             </aside>
+            @endauth
         </div>
 
         <footer

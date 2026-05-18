@@ -110,17 +110,13 @@ class AccountProvisioningService
                     'name' => trim((string) ($input['name'] ?? '')),
                     'full_name' => isset($input['full_name']) ? trim((string) $input['full_name']) : null,
                     'email' => strtolower(trim((string) $input['email'])),
-                    // Random initieel wachtwoord — wordt nooit naar de
-                    // gebruiker gestuurd, alleen overschreven via de
-                    // wachtwoord-reset-link uit de welkomstmail
-                    // (Requirement 5.5). MOET gehasht worden opgeslagen.
                     'password' => Hash::make(Str::random(40)),
                     'organization_id' => (int) $creator->organization_id,
                     'team_id' => $teamId,
                     'role' => $targetRole,
                     'is_active' => (bool) ($input['is_active'] ?? true),
-                    'employment_start' => $input['employment_start'] ?? null,
-                    'employment_end' => $input['employment_end'] ?? null,
+                    'employment_start' => ! empty($input['employment_start']) ? $input['employment_start'] : null,
+                    'employment_end' => ! empty($input['employment_end']) ? $input['employment_end'] : null,
                 ]);
 
                 $token = $this->passwordResetService->createToken((int) $user->id);
@@ -142,16 +138,12 @@ class AccountProvisioningService
                     'email' => (string) $user->email,
                     'role' => $targetRole,
                     'organization_name' => $organizationName,
-                    // Requirement 5.6: leeg `team_name` mag geen 422 of
-                    // onverwerkte placeholder opleveren.
                     'team_name' => $teamName,
                     'login_url' => $loginUrl,
                     'reset_link' => $resetLink,
                     'valid_hours' => (string) self::RESET_LINK_VALID_HOURS,
                 ];
 
-                // Render via de centrale template-renderer
-                // (Requirement 5.1, 5.3) i.p.v. een inline body.
                 $rendered = $this->emailTemplateService->render(
                     'welcome_email',
                     $vars,
@@ -183,15 +175,9 @@ class AccountProvisioningService
                 ];
             });
         } catch (ValidationException $e) {
-            // Validatie-fouten (bv. recipient hoort niet bij organisatie)
-            // mogen als 422 doorlopen — niet als 500 verpakken.
             throw $e;
         } catch (\Throwable $e) {
-            // Requirement 5.4: bij outbox-/render-fout de hele transactie
-            // terugdraaien (DB::transaction heeft dit reeds gedaan
-            // doordat de exception escaleerde) en HTTP 500 met code
-            // `WELCOME_EMAIL_FAILED` retourneren via de controller.
-            throw new \RuntimeException('WELCOME_EMAIL_FAILED', 0, $e);
+            throw new \RuntimeException('WELCOME_EMAIL_FAILED: ' . $e->getMessage(), 0, $e);
         }
     }
 }

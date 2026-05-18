@@ -147,16 +147,45 @@ class LoginForm extends Component
         $this->password = '';
 
         $userId = (int) ($result['user_id'] ?? 0);
+        $sessionToken = (string) ($result['session_token'] ?? '');
 
-        // Sla de pending MFA user_id op in de sessie i.p.v. de URL.
-        // Dit voorkomt dat interne user IDs lekken via browser-history,
-        // server-logs, referrer-headers en proxy-logs (V-01 fix).
-        session()->put('pending_mfa_user_id', $userId);
+        // Sla het session_token op zodat de EnsureSessionAuthenticated
+        // middleware het herkent na MFA-verificatie of directe login.
+        session()->put('auth_session_token', $sessionToken);
 
-        return $this->redirect(
-            url('/auth/mfa-verify'),
-            navigate: false,
-        );
+        // Bepaal of de gebruiker MFA heeft ingesteld
+        $user = \App\Models\User::find($userId);
+        $mfaSecret = $user?->mfaSecret;
+        $hasMfaConfigured = $mfaSecret
+            && $mfaSecret->verified_at !== null
+            && $mfaSecret->disabled_at === null;
+
+        // MFA is verplicht voor owner/manager (InternalApiAuth::requiresVerifiedMfa)
+        $mfaRequiredForRole = in_array((string) ($user?->role ?? ''), ['owner', 'manager'], true);
+
+        if ($hasMfaConfigured) {
+            // MFA is ingesteld en actief → verify-stap
+            session()->put('pending_mfa_user_id', $userId);
+            // Verwijder het session token totdat MFA is geverifieerd
+            session()->forget('auth_session_token');
+            session()->put('pending_session_token', $sessionToken);
+            session()->save();
+
+            return $this->redirect(url('/auth/mfa-verify'), navigate: false);
+        }
+
+        if ($mfaRequiredForRole) {
+            // MFA is verplicht maar nog niet ingesteld → setup-stap
+            session()->put('pending_mfa_user_id', $userId);
+            session()->save();
+
+            return $this->redirect(url('/mfa-setup'), navigate: false);
+        }
+
+        // Geen MFA vereist en niet ingesteld → direct naar dashboard
+        session()->save();
+
+        return $this->redirect(url('/dashboard'), navigate: false);
     }
 
     public function render(): View

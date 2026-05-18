@@ -172,12 +172,9 @@ class AuthMfaService
             'issuer' => $issuer,
             'label' => $label,
             'provisioning_secret_last4' => substr($secret, -4),
+            'provisioning_secret' => $secret,
             'recovery_codes' => $plainCodes,
         ];
-
-        if (app()->environment(['local', 'testing'])) {
-            $response['provisioning_secret'] = $secret;
-        }
 
         return $response;
     }

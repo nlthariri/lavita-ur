@@ -61,24 +61,33 @@ use App\Livewire\Auth\MfaSetupQr;
 use App\Livewire\Auth\MfaVerifyForm;
 use App\Livewire\Auth\PasswordForgotForm;
 use App\Livewire\Auth\PasswordResetForm;
+use App\Livewire\Dashboard\EmployeeHome;
 use App\Livewire\Dashboard\ManagerHome;
 use App\Livewire\Hours\LeaveForm;
+use App\Livewire\Hours\LeaveOverview;
 use App\Livewire\Hours\MyWeek;
 use App\Livewire\Hours\WeekOverviewTable;
+use App\Livewire\Objections\ObjectionsList;
 use App\Livewire\Objections\ReviewForm;
+use App\Livewire\Profile\ProfilePage;
 use App\Livewire\Reports\Filters;
 use App\Livewire\Reports\YearExport;
 use App\Livewire\Settings\EmailTemplates;
+use App\Livewire\Settings\HolidaysManager;
+use App\Livewire\Settings\OrganizationSettings;
+use App\Livewire\Settings\ProjectsManager;
+use App\Livewire\Settings\SettingsOverview;
+use App\Livewire\Settings\TeamsManager;
 use App\Models\AuthSession;
 use Illuminate\Support\Facades\Route;
 
-// JSON-stub voor de root — bestaande non-spec-route, behouden zoals voor
-// taak 9.5 zodat de health-/discovery-respons niet wijzigt.
+// Root-route: redirect naar dashboard als ingelogd, anders naar inloggen.
 Route::get('/', function () {
-    return response()->json([
-        'service' => 'LaVita Urenregistratie API',
-        'docs' => '/api/health',
-    ]);
+    if (session('auth_session_token')) {
+        return redirect('/dashboard');
+    }
+
+    return redirect('/inloggen');
 });
 
 /*
@@ -100,9 +109,6 @@ Route::middleware(['web'])->group(function () {
     // Req 6.1 — 6-cijferige TOTP-stap (na succesvolle credentials).
     Route::get('/auth/mfa-verify', MfaVerifyForm::class)->name('mfa.verify');
 
-    // Req 6.1 — eerste-keer QR-setup met secret + 8 recovery codes.
-    Route::get('/mfa-setup', MfaSetupQr::class)->name('mfa.setup');
-
     // Req 6.11 — request-stap "wachtwoord vergeten".
     Route::get('/wachtwoord-vergeten', PasswordForgotForm::class)->name('password.forgot');
 
@@ -111,14 +117,27 @@ Route::middleware(['web'])->group(function () {
 
     // ─── Beveiligde routes (vereisen actieve sessie) ─────────────────────
     Route::middleware(['auth.session'])->group(function () {
+        // Req 6.1 — eerste-keer QR-setup met secret + 8 recovery codes.
+        Route::get('/mfa-setup', MfaSetupQr::class)->name('mfa.setup');
         // Req 6.12 — E-mailcycli beheer: owner kan alle 11 templates bekijken en bewerken.
         Route::get('/instellingen/email', EmailTemplates::class)->name('settings.email-templates');
+
+        // Instellingen-overzicht
+        Route::get('/instellingen', SettingsOverview::class)->name('settings.index');
+        Route::get('/instellingen/organisatie', OrganizationSettings::class)->name('settings.organization');
+        Route::get('/instellingen/teams', TeamsManager::class)->name('settings.teams');
+        Route::get('/instellingen/projecten', ProjectsManager::class)->name('settings.projects');
+        Route::get('/instellingen/feestdagen', HolidaysManager::class)->name('settings.holidays');
+
+        // Profiel
+        Route::get('/profiel', ProfilePage::class)->name('profile');
 
         // Req 6.8, 6.13, 10.1 — Accountbeheer: lijst met zoeken, create/edit, activeren/deactiveren, soft-delete.
         Route::get('/accounts', AccountsList::class)->name('accounts.index');
 
         // Dashboard (Req 6.9)
         Route::get('/dashboard', ManagerHome::class)->name('dashboard');
+        Route::get('/dashboard/medewerker', EmployeeHome::class)->name('dashboard.employee');
 
         // Uren (Req 6.3, 6.4)
         Route::get('/uren/week', WeekOverviewTable::class)->name('hours.week');
@@ -126,9 +145,11 @@ Route::middleware(['web'])->group(function () {
 
         // Verlof (Req 6.10)
         Route::get('/verlof', LeaveForm::class)->name('leave.index');
+        Route::get('/verlof/overzicht', LeaveOverview::class)->name('leave.overview');
 
-        // Bezwaren (Req 6.4)
-        Route::get('/bezwaren', ReviewForm::class)->name('objections.index');
+        // Bezwaren (Req 6.4, 6.6)
+        Route::get('/bezwaren', ObjectionsList::class)->name('objections.index');
+        Route::get('/bezwaren/{id}', ReviewForm::class)->name('objections.review')->whereNumber('id');
 
         // ATW (Req 6.5)
         Route::get('/atw', StatusDashboard::class)->name('atw.dashboard');

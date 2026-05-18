@@ -228,6 +228,7 @@ final class AccountsList extends Component
         }
 
         $results = $query
+            ->with('mfaSecret')
             ->orderBy('name', 'ASC')
             ->get();
 
@@ -361,28 +362,83 @@ final class AccountsList extends Component
     }
 
     /**
-     * UI-stub voor soft-delete. Owner-only.
+     * Soft-delete een gebruiker. Owner-only.
      *
-     * Reden waarom dit nog geen echte delete uitvoert:
-     *  - De `users.deleted_at`-kolom komt pas in taak 17.1.
-     *  - Pseudonimisering via `RetentionService::pseudonymize` komt pas
-     *    in taak 17.3.
-     *
-     * Wat doen we wél:
-     *  - Owner-only check (anders error op `softDelete`-veld).
-     *  - Account moet bestaan binnen dezelfde organisatie en mag niet
-     *    de actor zelf zijn (zelfde restrictie als toggleActive).
-     *  - Zet een NL-bevestiging in `$confirmation` zodat de view
-     *    weet dat de actie is geregistreerd maar dat de échte verwerking
-     *    pas plaatsvindt zodra de retentie-module live is.
-     *
-     * Wanneer 17.x landt: vervang de `$confirmation`-set door een echte
-     * `RetentionService::pseudonymize($userId, $actor->id)`-call met
-     * try/catch op `OPEN_OBJECTIONS` (req 10.7). De button en de view
-     * blijven hetzelfde.
+     * Verwijdert het account via Laravel's SoftDeletes (zet deleted_at).
+     * Revoked ook alle actieve sessies zodat de gebruiker direct wordt uitgelogd.
      */
-    public function softDeletePlaceholder(int $userId): void
+    public function softDelete(int $userId): void
     {
+        $this->resetErrorBag();
+        $this->confirmation = null;
+
+        /** @var User|null $actor */
+        $actor = Auth::user();
+        if ($actor === null) {
+            abort(403, 'Geen toegang.');
+        }
+
+        if ((string) $actor->role !== 'owner') {
+            $this->addError('softDelete', 'Alleen eigenaar kan accounts verwijderen.');
+
+            return;
+        }
+
+        if ($userId === (int) $actor->id) {
+            $this->addError('softDelete', 'Je kunt jezelf niet verwijderen.');
+
+            return;
+        }
+
+        /** @var User|null $target */
+        $target = User::query()
+            ->where('id', $userId)
+            ->where('organization_id', (int) $actor->organization_id)
+            ->first();
+
+        if ($target === null) {
+            $this->addError('softDelete', 'Account niet gevonden.');
+
+            return;
+        }
+
+        $displayName = (string) ($target->full_name ?? $target->name ?? '');
+
+        // Revoke alle actieve sessies
+        AuthSession::where('user_id', $target->id)
+            ->whereNull('revoked_at')
+            ->update(['revoked_at' => now()]);
+
+        // Soft-delete (zet deleted_at)
+        $target->is_active = false;
+        $target->save();
+        $target->delete();
+
+        // Audit
+        app(AuditService::class)->record([
+            'organization_id' => (int) $actor->organization_id,
+            'actor_id' => (int) $actor->id,
+            'action' => 'ACCOUNT_DELETED',
+            'target_type' => 'user',
+            'target_id' => (string) $userId,
+        ]);
+
+        $this->confirmation = "Account '{$displayName}' is verwijderd.";
+    }
+
+    /**
+     * Toggle MFA voor het opgegeven account. Owner-only.
+     *
+     * - Als de user een actieve MFA heeft (verified_at != null, disabled_at == null):
+     *   → zet disabled_at = now() (MFA uitschakelen)
+     * - Als de user een uitgeschakelde MFA heeft (disabled_at != null):
+     *   → zet disabled_at = null (MFA weer inschakelen)
+     * - Als de user geen MFA-secret heeft:
+     *   → niets te doen, MFA is nog nooit ingesteld
+     */
+    public function toggleMfa(int $userId): void
+    {
+        $this->confirmation = null;
         $this->resetErrorBag();
 
         /** @var User|null $actor */
@@ -392,34 +448,72 @@ final class AccountsList extends Component
         }
 
         if ((string) $actor->role !== 'owner') {
-            $this->addError('softDelete', 'Alleen eigenaar kan soft-deleten.');
+            $this->addError('toggle', 'Alleen de eigenaar kan MFA beheren.');
 
             return;
         }
 
-        if ($userId === (int) $actor->id) {
-            $this->addError('softDelete', 'Je kunt jezelf niet soft-deleten.');
-
-            return;
-        }
-
-        $exists = User::query()
+        /** @var User|null $target */
+        $target = User::query()
             ->where('id', $userId)
             ->where('organization_id', (int) $actor->organization_id)
-            ->exists();
+            ->first();
 
-        if (! $exists) {
-            $this->addError('softDelete', 'Account niet gevonden.');
+        if ($target === null) {
+            $this->addError('toggle', 'Account niet gevonden.');
 
             return;
         }
 
-        // Placeholder-melding: geeft de gebruiker een duidelijke NL-
-        // bevestiging dat het verzoek is geregistreerd, maar dat de
-        // backend-flow pas live komt zodra taak 17.x landt. Geen
-        // database-mutatie hier — de bestaande tabel heeft nog geen
-        // `deleted_at`-kolom om in te schrijven.
-        $this->confirmation = 'Soft-delete wordt geactiveerd zodra de retentie-module live is (taak 17.x).';
+        $mfaSecret = $target->mfaSecret;
+
+        if ($mfaSecret === null) {
+            $this->addError('toggle', 'MFA is nog niet ingesteld voor deze gebruiker. De gebruiker moet eerst zelf MFA instellen via /mfa-setup.');
+
+            return;
+        }
+
+        if ($mfaSecret->disabled_at === null) {
+            // MFA uitschakelen
+            $mfaSecret->update(['disabled_at' => now()]);
+            $this->confirmation = 'MFA uitgeschakeld voor ' . ($target->full_name ?? $target->name) . '.';
+        } else {
+            // MFA weer inschakelen
+            $mfaSecret->update(['disabled_at' => null]);
+            $this->confirmation = 'MFA ingeschakeld voor ' . ($target->full_name ?? $target->name) . '.';
+        }
+
+        // Audit
+        app(AuditService::class)->record([
+            'organization_id' => (int) $actor->organization_id,
+            'actor_id' => (int) $actor->id,
+            'action' => $mfaSecret->disabled_at === null ? 'MFA_ENABLED' : 'MFA_DISABLED',
+            'target_type' => 'user',
+            'target_id' => (string) $target->id,
+        ]);
+    }
+
+    /**
+     * Haal MFA-status op voor een user.
+     * Returns: 'active', 'disabled', 'not_configured'
+     */
+    public function getMfaStatus(User $user): string
+    {
+        $mfa = $user->mfaSecret;
+
+        if ($mfa === null) {
+            return 'not_configured';
+        }
+
+        if ($mfa->disabled_at !== null) {
+            return 'disabled';
+        }
+
+        if ($mfa->verified_at !== null) {
+            return 'active';
+        }
+
+        return 'not_configured';
     }
 
     /**

@@ -39,14 +39,14 @@ class SecurityHeadersMiddleware
             $response->headers->set('Pragma', 'no-cache');
         }
 
-        // CSP: nonce-based policy voor scripts, inline styles toegestaan
-        // voor Livewire/Tailwind. Nonce wordt per-request gegenereerd en
-        // beschikbaar gesteld via de Blade-directive @livewireScriptConfig.
+        // CSP: Alpine.js/Livewire vereist 'unsafe-eval' voor x-data/x-on
+        // expressies en 'unsafe-inline' voor Livewire's geïnjecteerde scripts.
+        // Google Fonts vereist fonts.googleapis.com en fonts.gstatic.com.
         if (app()->environment('production')) {
             $nonce = $this->getCspNonce();
             $response->headers->set(
                 'Content-Security-Policy',
-                "default-src 'self'; script-src 'self' 'nonce-{$nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
+                "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' 'nonce-{$nonce}'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self';"
             );
         }
 

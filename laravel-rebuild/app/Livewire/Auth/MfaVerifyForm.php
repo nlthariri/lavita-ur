@@ -229,6 +229,17 @@ class MfaVerifyForm extends Component
         // sessie niet onnodig gehinderd wordt door oude pogingen.
         RateLimiter::clear($rateKey);
 
+        // Promoveer het pending session_token naar auth_session_token
+        // zodat de EnsureSessionAuthenticated middleware de gebruiker
+        // herkent op beveiligde web-routes.
+        $pendingToken = session('pending_session_token');
+        if ($pendingToken) {
+            session()->put('auth_session_token', $pendingToken);
+            session()->forget('pending_session_token');
+        }
+        session()->forget('pending_mfa_user_id');
+        session()->save();
+
         // Resetten van het code-veld zodat het niet door volgende renders
         // teruggepost wordt (en niet zichtbaar blijft in de UI tijdens de
         // redirect).

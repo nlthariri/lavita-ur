@@ -150,9 +150,10 @@ final class ManagerHome extends Component
         }
 
         if ((string) $user->role === 'employee') {
-            // Employee heeft eigen weekoverzicht en eigen
-            // ATW-feedback; het management-dashboard is niet voor hen.
-            abort(403, 'Geen toegang tot dashboard.');
+            // Employee heeft eigen dashboard op /dashboard/medewerker.
+            $this->redirect('/dashboard/medewerker');
+
+            return;
         }
 
         $this->userFullName = (string) ($user->full_name ?: $user->name ?: '');

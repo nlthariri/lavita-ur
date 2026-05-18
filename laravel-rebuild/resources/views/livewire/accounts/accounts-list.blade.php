@@ -155,6 +155,7 @@
                         <th scope="col" class="px-3 py-2 font-medium text-ink">Rol</th>
                         <th scope="col" class="px-3 py-2 font-medium text-ink">Team</th>
                         <th scope="col" class="px-3 py-2 font-medium text-ink">Status</th>
+                        <th scope="col" class="px-3 py-2 font-medium text-ink">MFA</th>
                         <th scope="col" class="px-3 py-2 font-medium text-ink">Acties</th>
                     </tr>
                 </thead>
@@ -184,6 +185,26 @@
                                 >{{ $statusLabel }}</x-ui.status-badge>
                             </td>
                             <td class="px-3 py-2">
+                                @php
+                                    $mfaStatus = $this->getMfaStatus($user);
+                                    $mfaBadgeVariant = match($mfaStatus) {
+                                        'active' => 'success',
+                                        'disabled' => 'warning',
+                                        default => 'concept',
+                                    };
+                                    $mfaBadgeLabel = match($mfaStatus) {
+                                        'active' => 'Actief',
+                                        'disabled' => 'Uitgeschakeld',
+                                        default => 'Niet ingesteld',
+                                    };
+                                @endphp
+                                <x-ui.status-badge
+                                    :variant="$mfaBadgeVariant"
+                                    icon
+                                    data-testid="accounts-mfa-{{ $user->id }}"
+                                >{{ $mfaBadgeLabel }}</x-ui.status-badge>
+                            </td>
+                            <td class="px-3 py-2">
                                 <div class="flex flex-wrap gap-2">
                                     <x-ui.button
                                         variant="secondary"
@@ -197,13 +218,23 @@
                                         data-testid="accounts-toggle-{{ $user->id }}"
                                     >{{ $toggleLabel }}</x-ui.button>
 
+                                    @if ($isOwner && $mfaStatus !== 'not_configured')
+                                        <x-ui.button
+                                            variant="{{ $mfaStatus === 'active' ? 'ghost' : 'secondary' }}"
+                                            wire:click="toggleMfa({{ (int) $user->id }})"
+                                            data-testid="accounts-mfa-toggle-{{ $user->id }}"
+                                            aria-label="MFA {{ $mfaStatus === 'active' ? 'uitschakelen' : 'inschakelen' }} voor {{ $displayName }}"
+                                        >MFA {{ $mfaStatus === 'active' ? 'uit' : 'aan' }}</x-ui.button>
+                                    @endif
+
                                     @if ($isOwner)
                                         <x-ui.button
                                             variant="danger"
-                                            wire:click="softDeletePlaceholder({{ (int) $user->id }})"
+                                            wire:click="softDelete({{ (int) $user->id }})"
+                                            wire:confirm="Weet je zeker dat je het account van {{ $displayName }} wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
                                             data-testid="accounts-soft-delete-{{ $user->id }}"
-                                            aria-label="Soft-delete {{ $displayName }}"
-                                        >Soft-delete</x-ui.button>
+                                            aria-label="Verwijder {{ $displayName }}"
+                                        >Verwijderen</x-ui.button>
                                     @endif
                                 </div>
                             </td>
@@ -211,7 +242,7 @@
                     @empty
                         <tr data-testid="accounts-empty-row">
                             <td
-                                colspan="6"
+                                colspan="7"
                                 class="px-3 py-6 text-center text-body-sm text-steel"
                             >
                                 Geen accounts gevonden voor de huidige filters.

@@ -2,11 +2,14 @@
 
 namespace App\Providers;
 
+use App\Http\Middleware\OptionalSessionAuth;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
+use Livewire\Livewire;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -21,6 +24,16 @@ class AppServiceProvider extends ServiceProvider
         if (app()->environment('production')) {
             $this->validateProductionConfig();
         }
+
+        // Livewire update-route: voeg OptionalSessionAuth toe zodat
+        // Auth::user() beschikbaar is bij Livewire-acties (POST /livewire/update).
+        // Zonder dit is Auth::user() null bij Livewire-updates, wat 403-errors
+        // veroorzaakt in componenten die Auth::user() checken.
+        Livewire::setUpdateRoute(function ($handle) {
+            return Route::post('/livewire/update', $handle)
+                ->middleware(['web', OptionalSessionAuth::class])
+                ->name('livewire.update');
+        });
 
         // Publieke auth-routes: strikte rate limit (20 req/min per IP)
         RateLimiter::for('auth', function (Request $request) {

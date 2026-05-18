@@ -188,7 +188,7 @@
                         aria-required="true"
                         aria-describedby="email-template-body-text-help email-template-body-text-error"
                         class="block w-full rounded-input border-2 border-hairline bg-canvas px-3 py-2 font-mono text-body-sm text-ink placeholder:text-steel focus:border-brand-green focus:outline-none focus:ring-2 focus:ring-brand-green/20"
-                        placeholder="Beste {{ full_name }},&#10;&#10;..."
+                        placeholder="Beste @{{ full_name }},&#10;&#10;..."
                         data-testid="email-template-body-text-input"
                     ></textarea>
                     @error('bodyTextTemplate')
@@ -220,7 +220,7 @@
                         aria-required="true"
                         aria-describedby="email-template-body-html-help email-template-body-html-error"
                         class="block w-full rounded-input border-2 border-hairline bg-canvas px-3 py-2 font-mono text-body-sm text-ink placeholder:text-steel focus:border-brand-green focus:outline-none focus:ring-2 focus:ring-brand-green/20"
-                        placeholder="<p>Beste {{ full_name }},</p>&#10;..."
+                        placeholder="<p>Beste @{{ full_name }},</p>&#10;..."
                         data-testid="email-template-body-html-input"
                     ></textarea>
                     @error('bodyHtmlTemplate')

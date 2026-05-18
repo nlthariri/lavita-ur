@@ -261,4 +261,61 @@
             </div>
         </form>
     </x-ui.card>
+
+    {{-- Recente verlofmeldingen van de huidige gebruiker --}}
+    @php
+        $recentLeaves = \App\Models\WorkEntry::withTrashed()
+            ->where('employee_id', (int) $authUser->id)
+            ->where('organization_id', (int) $authUser->organization_id)
+            ->whereIn('type', ['SICK', 'LEAVE', 'HOLIDAY'])
+            ->orderByDesc('entry_date')
+            ->limit(5)
+            ->get();
+
+        $typeLabelsRecent = [
+            'SICK' => 'Ziek',
+            'LEAVE' => 'Verlof',
+            'HOLIDAY' => 'Feestdag',
+        ];
+    @endphp
+
+    @if ($recentLeaves->isNotEmpty())
+        <x-ui.card>
+            <x-slot:header>
+                <div class="flex items-center justify-between">
+                    <h2 class="text-heading-3 font-semibold text-ink">
+                        Recente meldingen
+                    </h2>
+                    <a
+                        href="/verlof/overzicht"
+                        class="text-body-sm text-steel no-underline hover:text-ink"
+                    >Bekijk alles →</a>
+                </div>
+            </x-slot:header>
+
+            <ul class="flex flex-col gap-2">
+                @foreach ($recentLeaves as $recentEntry)
+                    @php
+                        $isRejected = $recentEntry->deleted_at !== null;
+                        $isApproved = ! $isRejected && (bool) $recentEntry->is_finalized;
+                        $statusVariant = $isRejected ? 'danger' : ($isApproved ? 'success' : 'concept');
+                        $statusLabel = $isRejected ? 'Afgewezen' : ($isApproved ? 'Goedgekeurd' : 'In afwachting');
+                    @endphp
+                    <li class="flex items-center justify-between rounded-input border border-hairline px-3 py-2">
+                        <div class="flex items-center gap-3">
+                            <span class="text-body-sm text-ink">
+                                {{ $recentEntry->entry_date?->format('d-m-Y') ?? '—' }}
+                            </span>
+                            <span class="text-body-sm text-steel">
+                                {{ $typeLabelsRecent[$recentEntry->type] ?? $recentEntry->type }}
+                            </span>
+                        </div>
+                        <x-ui.status-badge :variant="$statusVariant" icon>
+                            {{ $statusLabel }}
+                        </x-ui.status-badge>
+                    </li>
+                @endforeach
+            </ul>
+        </x-ui.card>
+    @endif
 </div>

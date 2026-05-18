@@ -7,29 +7,33 @@ namespace App\Http\Middleware;
 use App\Models\AuthSession;
 use Closure;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
- * Web-layer authenticatie-guard voor Livewire-pagina's.
+ * Optionele sessie-authenticatie voor Livewire's update-endpoint.
  *
- * Controleert of er een geldige sessie-token in de Laravel-sessie staat
- * (opgeslagen na succesvolle MFA-verificatie). Zonder geldige sessie
- * wordt de gebruiker naar /inloggen geredirect.
+ * Verschil met EnsureSessionAuthenticated:
+ *  - Geen redirect bij ontbrekende sessie — laat het request door.
+ *  - Als er WEL een geldige sessie is, wordt Auth::user() gezet.
  *
- * Dit is de web-equivalent van InternalApiAuth (die bearer tokens
- * valideert voor API-routes).
+ * Dit is nodig omdat Livewire's /livewire/update endpoint NIET door de
+ * route-specifieke middleware gaat. Zonder deze middleware is Auth::user()
+ * null bij Livewire-acties, wat 403-errors veroorzaakt in componenten
+ * die Auth::user() checken.
  *
- * Requirements: 6.1, 6.9, NFR-7
+ * Auth-pagina's (login, MFA) hebben geen sessie en worden gewoon
+ * doorgelaten — hun componenten verwachten geen Auth::user().
  */
-class EnsureSessionAuthenticated
+class OptionalSessionAuth
 {
     public function handle(Request $request, Closure $next): Response
     {
         $sessionToken = session('auth_session_token');
 
         if (! $sessionToken) {
-            return redirect()->route('login')
-                ->with('message', 'Je moet ingelogd zijn om deze pagina te bekijken.');
+            // Geen sessie-token → laat door (auth-pagina's of verlopen sessie).
+            return $next($request);
         }
 
         $tokenHash = hash('sha256', $sessionToken);
@@ -42,20 +46,16 @@ class EnsureSessionAuthenticated
             ->first();
 
         if (! $authSession || ! $authSession->user || ! $authSession->user->is_active) {
-            session()->forget('auth_session_token');
-
-            return redirect()->route('login')
-                ->with('message', 'Je sessie is verlopen. Log opnieuw in.');
+            // Ongeldige/verlopen sessie → laat door zonder user.
+            // De component of de pagina-middleware handelt de redirect af.
+            return $next($request);
         }
 
-        // Idle-timeout: 30 minuten inactiviteit → sessie verlopen
+        // Idle-timeout: 30 minuten inactiviteit
         $idleTimeoutMinutes = 30;
         if ($authSession->last_seen_at && $authSession->last_seen_at->diffInMinutes(now()) > $idleTimeoutMinutes) {
-            $authSession->update(['revoked_at' => now()]);
-            session()->forget('auth_session_token');
-
-            return redirect()->route('login')
-                ->with('message', 'Je sessie is verlopen door inactiviteit. Log opnieuw in.');
+            // Verlopen door inactiviteit → laat door zonder user.
+            return $next($request);
         }
 
         // Update last_seen_at (throttled: max 1x per minuut)
@@ -65,10 +65,7 @@ class EnsureSessionAuthenticated
 
         // Maak de user beschikbaar via auth()->user() en $request->user()
         $request->setUserResolver(fn () => $authSession->user);
-
-        // Zet de user ook op de Auth guard zodat Auth::user() en
-        // auth()->user() in Livewire-componenten correct werken.
-        \Illuminate\Support\Facades\Auth::setUser($authSession->user);
+        Auth::setUser($authSession->user);
 
         return $next($request);
     }

@@ -367,13 +367,26 @@ final class AccountForm extends Component
                 'team_id' => $this->teamId,
                 'is_active' => $this->isActive,
                 'email_reminders_opt_in' => $this->emailRemindersOptIn,
-                'employment_start' => $this->employmentStart,
-                'employment_end' => $this->employmentEnd,
+                'employment_start' => $this->employmentStart !== '' ? $this->employmentStart : null,
+                'employment_end' => $this->employmentEnd !== '' ? $this->employmentEnd : null,
             ], (int) $actor->id);
         } catch (ValidationException $e) {
             $this->mapServiceErrors($e);
 
             return;
+        } catch (\RuntimeException $e) {
+            if (str_starts_with($e->getMessage(), 'WELCOME_EMAIL_FAILED')) {
+                $detail = $e->getPrevious()?->getMessage() ?? 'onbekende fout';
+                // Check of het een duplicate email is
+                if (str_contains($detail, 'email_index_hash_unique') || str_contains($detail, 'Duplicate entry')) {
+                    $this->addError('email', 'Dit e-mailadres is al in gebruik. Controleer of het account al bestaat (mogelijk verwijderd).');
+                } else {
+                    $this->addError('email', 'Account aanmaken mislukt: ' . $detail);
+                }
+
+                return;
+            }
+            throw $e;
         }
 
         $this->confirmation = 'Account aangemaakt.';
@@ -478,8 +491,8 @@ final class AccountForm extends Component
             'team_id' => $this->teamId,
             'is_active' => $this->isActive,
             'email_reminders_opt_in' => $this->emailRemindersOptIn,
-            'employment_start' => $this->employmentStart,
-            'employment_end' => $this->employmentEnd,
+            'employment_start' => $this->employmentStart !== '' ? $this->employmentStart : null,
+            'employment_end' => $this->employmentEnd !== '' ? $this->employmentEnd : null,
         ]);
 
         // Audit-event voor account-mutatie (AVG compliance)

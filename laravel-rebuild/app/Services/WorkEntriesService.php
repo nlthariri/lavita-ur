@@ -219,6 +219,14 @@ class WorkEntriesService
         }
 
         return DB::transaction(function () use ($input, $registrar, $employee, $startAt, $endAt, $pauseMinutes, $netMinutes, $entryDate, $atwValidation, $projectId, $costCenterId): array {
+            $type = strtoupper((string) ($input['type'] ?? 'WORK'));
+
+            // Verlof/ziekte ingediend door een employee zelf → in afwachting (niet automatisch goedgekeurd).
+            // Manager/owner die het registreert → direct goedgekeurd.
+            $isLeaveType = in_array($type, ['SICK', 'LEAVE', 'HOLIDAY'], true);
+            $isEmployeeSelfSubmit = $isLeaveType && (int) $registrar->id === (int) $employee->id && (string) $registrar->role === 'employee';
+            $isFinalized = $isEmployeeSelfSubmit ? false : true;
+
             $entry = WorkEntry::create([
                 'organization_id' => $registrar->organization_id,
                 'employee_id' => $employee->id,
@@ -229,26 +237,30 @@ class WorkEntriesService
                 'end_at' => $endAt,
                 'pause_minutes' => $pauseMinutes,
                 'net_minutes' => $netMinutes,
-                'type' => strtoupper((string) ($input['type'] ?? 'WORK')),
+                'type' => $type,
                 'note' => isset($input['note']) ? strip_tags(substr(trim($input['note']), 0, 500)) : null,
                 'project_id' => $projectId,
                 'cost_center_id' => $costCenterId,
-                'is_finalized' => true,
+                'is_finalized' => $isFinalized,
             ]);
 
-            $this->emailOutboxService->dispatch([
-                'idempotency_key' => 'work-entry-finalized-'.$entry->id,
-                'organization_id' => (int) $registrar->organization_id,
-                'user_id' => (int) $employee->id,
-                'recipient' => (string) $employee->email,
-                'subject' => 'Uren zijn vastgesteld',
-                'body_text' => 'Uw uren voor '.$entryDate.' zijn vastgesteld. Netto minuten: '.$netMinutes.'.',
-                'body_html' => '<p>Uw uren voor <strong>'.$entryDate.'</strong> zijn vastgesteld.</p><p>Netto minuten: <strong>'.$netMinutes.'</strong>.</p>',
-                'type' => 'work_entry_finalized',
-            ], [
-                'actor_id' => (int) $registrar->id,
-                'organization_id' => (int) $registrar->organization_id,
-            ]);
+            // Alleen "vastgesteld"-mail sturen als de entry direct is goedgekeurd.
+            // Verlofmeldingen in afwachting krijgen pas een mail bij goedkeuring.
+            if ($isFinalized) {
+                $this->emailOutboxService->dispatch([
+                    'idempotency_key' => 'work-entry-finalized-'.$entry->id,
+                    'organization_id' => (int) $registrar->organization_id,
+                    'user_id' => (int) $employee->id,
+                    'recipient' => (string) $employee->email,
+                    'subject' => 'Uren zijn vastgesteld',
+                    'body_text' => 'Uw uren voor '.$entryDate.' zijn vastgesteld. Netto minuten: '.$netMinutes.'.',
+                    'body_html' => '<p>Uw uren voor <strong>'.$entryDate.'</strong> zijn vastgesteld.</p><p>Netto minuten: <strong>'.$netMinutes.'</strong>.</p>',
+                    'type' => 'work_entry_finalized',
+                ], [
+                    'actor_id' => (int) $registrar->id,
+                    'organization_id' => (int) $registrar->organization_id,
+                ]);
+            }
 
             $this->atwService->dispatchSignalsForCreatedEntry(
                 $employee,

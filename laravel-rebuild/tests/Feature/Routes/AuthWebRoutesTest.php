@@ -72,16 +72,10 @@ final class AuthWebRoutesTest extends TestCase
 
     public function test_mfa_setup_route_resolves_to_mfa_setup_qr_component(): void
     {
-        // `MfaSetupQr` accepteert een GET zonder geauthenticeerde gebruiker:
-        // het component heeft een fallback in mount() die uiteindelijk
-        // userId=0 zet wanneer geen auth/query/arg aanwezig is. Het
-        // wachtwoord-formulier rendert dan zonder fout (zie
-        // MfaSetupQrTest::test_render_returns_200_*). Wij valideren hier
-        // alleen dat de route-glue klopt — het mount-gedrag is op
-        // component-niveau gedekt.
+        // `/mfa-setup` zit achter `auth.session` middleware — zonder
+        // actieve sessie wordt de gebruiker geredirect naar /inloggen.
         $this->get('/mfa-setup')
-            ->assertOk()
-            ->assertSeeLivewire(MfaSetupQr::class);
+            ->assertRedirect('/inloggen');
     }
 
     public function test_wachtwoord_vergeten_route_resolves_to_password_forgot_form_component(): void

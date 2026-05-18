@@ -216,9 +216,13 @@
                                         $dayId = 'th-day-'.$iso;
                                     @endphp
                                     <td
-                                        class="px-2 py-3 align-top {{ $isHoliday ? 'bg-gray-100' : '' }}"
+                                        class="px-2 py-3 align-top cursor-pointer transition-colors hover:bg-surface/50 {{ $isHoliday ? 'bg-gray-100' : '' }}"
                                         headers="{{ $rowId }} {{ $dayId }}"
                                         @if ($isHoliday) title="{{ $holidayName }}" @endif
+                                        wire:click="$dispatch('open-entry-form-modal', { employeeId: {{ (int) $employee->id }}, entryDate: '{{ $iso }}' })"
+                                        role="button"
+                                        tabindex="0"
+                                        aria-label="Uren invoeren voor {{ $employeeName }} op {{ $date->format('d-m-Y') }}"
                                     >
                                         @if ($isHoliday)
                                             <div class="flex flex-col items-start gap-1">
@@ -257,4 +261,7 @@
             </div>
         @endif
     </x-ui.card>
+
+    {{-- Ingebedde entry-form-modal — luistert op open-entry-form-modal event --}}
+    <livewire:hours.entry-form-modal />
 </div>

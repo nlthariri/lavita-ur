@@ -1,578 +1,709 @@
-﻿# Design Document — LaVita Urenregistratie
+﻿# Design Document — La Vita Urenregistratie (Frontend Features)
 
 ## Overview
 
-Deze ontwerpnota beschrijft hoe de bestaande LaVita Urenregistratie-backend (Laravel 13, PHP 8.3, MySQL) wordt uitgebreid met de in `requirements.md` beschreven 17 requirements. De backend bestaat al uit modulaire controllers (`Transitie\*Module`) en services (`WorkEntriesService`, `AtwService`, `AtwEngine`, `AccountProvisioningService`, `EmailOutboxService`, `RetentionService`, `PendingInputReminderService`, `ReportQueryService`, `ObjectionsService`, `AuthMfaService`, `PasswordResetService`). Wat ontbreekt is (a) PATCH/DELETE/GET-single op werkregels, (b) project- en kostenplaatsmodule, (c) read-only middleware voor de boekhouder-rol, (d) ATW-validaties voor 60u-grens en pauze ≥30 min bij >5,5u, (e) welkomstmail, (f) 12 frontend-schermen, (g) verlof/feestdagen-flow + import, (h) copy-week, (i) opt-out herinneringen, (j) AVG-export en pseudonimisering, (k) jubileum-scheduler, (l) TLS+AES-encryptie + at-rest, (m) backup-cron + integriteit, (n) volledige documentatieset (technisch, handleidingen, VWO, WOR).
+Dit ontwerp beschrijft de frontend-uitbreiding van de La Vita Urenregistratie applicatie, gericht op drie fasen: (1) Dashboard Revolutie met KPI-cards en grafieken, (2) Uren-invoer Verbeteren met kleurcodering, copy-week en slimme defaults, en (3) Verlof-systeem Uitbreiden met kalender, saldo-tracking en verlof-types.
 
-Het ontwerp respecteert:
+De applicatie draait op **Laravel 13 + Livewire 3.6 + Tailwind CSS + Alpine.js + MySQL**, gehost op Cloud86 shared hosting (cPanel, FTP, geen SSH). De backend is grotendeels compleet; dit ontwerp focust op de Livewire-componenten, UI-atoms, data-aggregatie en client-side interactie die nodig zijn om de requirements te realiseren.
 
-- de bestaande modulestructuur (`app/Http/Controllers/Transitie/*`, `app/Services/*`, `app/Models/*`)
-- het bestaande auth-pad met bearer-tokens via `InternalApiAuth` middleware en MFA-rotatie 180 dagen
-- de bestaande email-outbox (append-only, met `email_outbox_events` evidence-trail en `EvidencePrivilegeVerificationService`)
-- het bestaande audit-systeem (`audit_events`, evidence-tabellen met DB-level append-only guards)
-- de bestaande ATW-engine (`AtwEngine`) met de 5 signaaltypes (DAILY_LIMIT, WEEKLY_WARNING, WEEKLY_LIMIT, SIXTEEN_WEEK_AVERAGE, REST_PERIOD) — uit te breiden met `PAUSE_REQUIRED`
-
-De frontend wordt gerealiseerd met **Blade + Livewire 3** (server-rendered, geen build-stack-explosie, sluit aan op Laravel 13). Tailwind CSS 3 met design tokens uit deze nota voor styling. Overal Inter (UI) en Geist Mono (code/cijfertabel).
+**Kernbeslissingen:**
+- **ApexCharts via CDN** voor grafieken (geen npm build-stap nodig op shared hosting)
+- **Alpine.js** voor client-side toast-management, keyboard shortcuts en timeline-interactie
+- **Livewire `lazy`** voor zware widgets (charts, kalender) om FCP < 2s te halen
+- **Livewire `wire:poll.30s`** voor near-realtime KPI-updates zonder WebSockets
+- **Bestaande services hergebruiken** (WorkEntriesService, AtwService) — geen HTTP-roundtrips naar eigen API vanuit Livewire
 
 ## Architecture
 
-### Hoog-niveau architectuur
+### Hoog-niveau componentenarchitectuur
+
+```mermaid
+graph TB
+    subgraph "Browser"
+        ALPINE["Alpine.js<br/>Toast Manager<br/>Keyboard Shortcuts<br/>Timeline Interactions"]
+        APEX["ApexCharts CDN<br/>Bar/Donut Charts"]
+    end
+
+    subgraph "Livewire Components (Server-rendered)"
+        subgraph "Fase 1: Dashboards"
+            MH["Dashboard\ManagerHome<br/>(uitbreiden)"]
+            EH["Dashboard\EmployeeHome<br/>(uitbreiden)"]
+        end
+        subgraph "Fase 2: Uren"
+            WOT["Hours\WeekOverviewTable<br/>(uitbreiden)"]
+            EFM["Hours\EntryFormModal<br/>(uitbreiden)"]
+            MW["Hours\MyWeek<br/>(uitbreiden)"]
+        end
+        subgraph "Fase 3: Verlof"
+            LC["Hours\LeaveCalendar<br/>(nieuw)"]
+            LF["Hours\LeaveForm<br/>(uitbreiden)"]
+            LT["Settings\LeaveTypesManager<br/>(nieuw)"]
+        end
+    end
+
+    subgraph "UI Atoms (Blade Components)"
+        TOAST["x-ui.toast"]
+        MODAL["x-ui.modal"]
+        PROG["x-ui.progress"]
+        SKEL["x-ui.skeleton"]
+        STAT["x-ui.stat-card"]
+        AVATAR["x-ui.avatar"]
+    end
+
+    subgraph "Services (bestaand)"
+        WES["WorkEntriesService"]
+        ATWS["AtwService"]
+        HS["HolidaysService"]
+    end
+
+    subgraph "Services (nieuw)"
+        DAS["DashboardAggregationService"]
+        LBS["LeaveBalanceService"]
+        CWS["CopyWeekService (bestaand)"]
+    end
+
+    MH --> DAS --> WES
+    MH --> STAT
+    MH --> APEX
+    EH --> LBS
+    EH --> PROG
+    WOT --> WES
+    WOT --> CWS
+    EFM --> ATWS
+    LC --> LBS
+    LF --> LBS
+    ALPINE --> TOAST
+```
+
+### Request-flow: Dashboard KPI-laden
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant LW as Livewire (ManagerHome)
+    participant DAS as DashboardAggregationService
+    participant DB as MySQL
+
+    B->>LW: GET /dashboard (initial render)
+    LW->>LW: mount() → skeleton placeholders
+    B-->>B: FCP < 2s (skeletons visible)
+    LW->>DAS: getKpiData(user, scope)
+    DAS->>DB: SELECT SUM(net_minutes)... (eager loaded)
+    DAS->>DB: SELECT COUNT(DISTINCT employee_id)...
+    DAS->>DB: SELECT COUNT(*) FROM work_entries WHERE type=LEAVE...
+    DAS->>DB: SELECT COUNT(*) FROM atw_violations...
+    DAS-->>LW: KpiData DTO
+    LW-->>B: Render KPI cards + chart data
+    B->>APEX: Initialize bar chart with data
+    loop Every 30s
+        B->>LW: wire:poll.30s
+        LW->>DAS: getKpiData(user, scope)
+        DAS-->>LW: Updated KpiData
+        LW-->>B: Morph KPI values
+    end
+```
+
+### Request-flow: Copy-week
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant LW as Livewire (WeekOverviewTable)
+    participant CWS as CopyWeekService
+    participant ATW as AtwService
+    participant DB as MySQL
+
+    B->>LW: click "Kopieer vorige week"
+    LW-->>B: Show confirmation modal
+    B->>LW: confirm copy
+    LW->>CWS: copyWeek(sourceStart, targetStart, employeeIds, actorId)
+    loop For each source entry
+        CWS->>DB: Check duplicate (employee, date, start)
+        CWS->>ATW: validateProposedShift(shifted entry)
+        alt No conflict & no ATW critical
+            CWS->>DB: INSERT work_entry (date + 7d)
+            CWS->>DB: INSERT audit_event
+        else Duplicate or ATW critical
+            CWS->>CWS: Add to skipped[]
+        end
+    end
+    CWS-->>LW: {created: [...], skipped: [...]}
+    LW->>LW: dispatch('toast', variant, message)
+    LW-->>B: Refresh week table + toast
+```
+
+### Toast-systeem architectuur
 
 ```mermaid
 graph LR
-  subgraph Browser
-    UI["Livewire UI<br/>Blade + Tailwind"]
-  end
-  subgraph Laravel App
-    R[Routes /api/internal/*]
-    M[Middleware<br/>InternalApiAuth +<br/>BookkeeperReadonly +<br/>FailClosedThrottle]
-    C[Controllers<br/>Transitie\*Module]
-    S[Services<br/>WorkEntriesService<br/>AtwService + AtwEngine<br/>ProjectsService<br/>CostCentersService<br/>AccountProvisioningService<br/>RetentionService<br/>HolidaysService<br/>CopyWeekService<br/>DataExportService]
-    Q[Queue<br/>email_outbox + jobs]
-    SCH[Scheduler<br/>app/Console/Commands]
-  end
-  DB[(MySQL 8<br/>AES-256 disk<br/>encrypted casts)]
-  MAIL[SMTP-relay<br/>TLS 1.3]
+    subgraph "Server (Livewire)"
+        ACTION["Livewire Action<br/>(save/delete/copy)"]
+        DISPATCH["dispatch('toast',<br/>{variant, message})"]
+    end
+    subgraph "Client (Alpine.js)"
+        LISTENER["@toast.window listener"]
+        QUEUE["Toast Queue<br/>(max 3 visible)"]
+        TIMER["Auto-dismiss Timer<br/>(5s default, 8s error)"]
+        RENDER["Render Toast Stack<br/>(slide-in, fade-out)"]
+    end
 
-  UI -->|Bearer + MFA| R --> M --> C --> S --> DB
-  S --> Q --> MAIL
-  SCH --> S
-```
-
-### Verzoekstroom werkregel-edit (PATCH)
-
-```mermaid
-sequenceDiagram
-  participant U as UI (Livewire)
-  participant API as PATCH /work-entries/{id}
-  participant MW as InternalApiAuth + BookkeeperReadonly
-  participant CT as WorkEntriesModuleController::patch
-  participant SV as WorkEntriesService::update
-  participant ATW as AtwService::validateProposedShift
-  participant DB as MySQL
-  participant OB as EmailOutboxService
-
-  U->>API: PATCH {id} body
-  API->>MW: bearer token + role check
-  MW-->>API: 403 indien boekhouder/employee
-  API->>CT: validate body
-  CT->>SV: update($id, $input, $registrarId)
-  SV->>DB: lock entry FOR UPDATE
-  SV->>DB: check objection.status != OPEN
-  SV->>SV: pause-required check (>330 min ⇒ pause ≥ 30)
-  SV->>ATW: validateProposedShift incl. PATCH excl. eigen entry
-  ATW-->>SV: signals + has_critical
-  alt has_critical (60u, 12u, rust, pauze)
-    SV-->>CT: throw 422 met code
-  else ok of warning
-    SV->>DB: update entry + recompute net_minutes
-    SV->>DB: insert audit_events WORK_ENTRY_UPDATED
-    SV->>OB: dispatch work_entry_updated mail
-    SV-->>CT: WorkEntry array
-  end
-```
-
-### Boekhouder read-only middleware
-
-```mermaid
-flowchart LR
-  REQ[HTTP request] --> AUTH[InternalApiAuth] --> RO{role == boekhouder?}
-  RO -- nee --> N[next handler]
-  RO -- ja --> M{method GET?}
-  M -- ja --> N
-  M -- nee --> F[403 READ_ONLY_ROLE]
-```
-
-### MFA-flow (bestaand, in design verankerd)
-
-```mermaid
-sequenceDiagram
-  participant U as Browser
-  participant L as POST /auth/login
-  participant V as POST /auth/mfa/verify
-  participant S as POST /auth/mfa/setup
-  participant DB as auth_sessions / mfa_secrets
-
-  U->>L: email + wachtwoord
-  L-->>U: { session_token, mfa_required: true|false }
-  alt eerste keer (geen mfa_secret)
-    U->>S: bearer token (mfa_setup_required)
-    S-->>U: { secret, qr_data_url, recovery_codes[8] }
-  end
-  U->>V: { code (6 cijfers) }
-  V-->>U: { mfa_verified: true } sessie volledig actief
-  Note over DB: mfa_secret.verified_at + rotated_at
+    ACTION --> DISPATCH
+    DISPATCH --> LISTENER --> QUEUE --> RENDER
+    QUEUE --> TIMER
 ```
 
 ## Components and Interfaces
 
-### Backend componenten
+### Nieuwe/uitgebreide Livewire-componenten
 
-| Component | Verantwoordelijkheid | Routes |
+| Component | Route | Fase | Actie |
+|---|---|---|---|
+| `Dashboard\ManagerHome` | `/dashboard` | 1 | Uitbreiden met KPI-cards, ApexCharts, activiteit-feed, wire:poll |
+| `Dashboard\EmployeeHome` | `/dashboard` (employee) | 1 | Uitbreiden met progress bars, verlof-saldo, mini-weekoverzicht |
+| `Hours\WeekOverviewTable` | `/uren/week` | 2 | Uitbreiden met kleurcodering, totalen, copy-week, print, ATW-indicators |
+| `Hours\EntryFormModal` | (modal) | 2 | Uitbreiden met slimme defaults, keyboard shortcuts |
+| `Hours\MyWeek` | `/uren/mijn-week` | 2 | Uitbreiden met visuele tijdlijn |
+| `Hours\LeaveCalendar` (nieuw) | `/verlof/kalender` | 3 | Maandweergave verlof/ziekte/feestdagen |
+| `Hours\LeaveForm` | `/verlof` | 3 | Uitbreiden met half-dag, annuleren, verlof-types |
+| `Settings\LeaveTypesManager` (nieuw) | `/instellingen/verlof-types` | 3 | CRUD verlof-types |
+
+### Nieuwe UI-atoms (Blade Components)
+
+#### `<x-ui.toast>`
+
+```php
+@props([
+    'variant' => 'info',    // success | error | warning | info
+    'message' => '',        // string
+    'duration' => 5000,     // ms (8000 voor error)
+])
+```
+
+**Implementatie:** Alpine.js component met `x-data="toastManager()"` op een globale container in `layouts/app.blade.php`. Luistert naar `@toast.window` events. Beheert een queue van max 3 zichtbare toasts. Elke toast heeft een countdown-timer die pauzeert bij hover.
+
+**Styling:** Positioned `fixed top-4 right-4` (desktop) of `fixed top-4 inset-x-4` (mobiel). Slide-in van rechts via `translate-x-full → translate-x-0` transition (300ms). Fade-out via `opacity-0` (200ms).
+
+**ARIA:** `role="alert"`, `aria-live="polite"`, sluit-knop met `aria-label="Melding sluiten"`.
+
+#### `<x-ui.modal>`
+
+```php
+@props([
+    'title' => '',          // string
+    'size' => 'md',         // sm | md | lg
+    'show' => false,        // bool (Alpine.js controlled)
+])
+```
+
+**Implementatie:** Alpine.js `x-show` met `x-transition` (scale 95%→100% + opacity). Focus-trap via `@focusin` handler. Escape-toets sluit modal. Backdrop click sluit modal.
+
+**ARIA:** `role="dialog"`, `aria-modal="true"`, `aria-labelledby` verwijst naar title-element.
+
+**Sizes:** `sm` = max-w-sm (384px), `md` = max-w-lg (512px), `lg` = max-w-2xl (672px).
+
+#### `<x-ui.progress>`
+
+```php
+@props([
+    'value' => 0,           // 0-100 (of absolute waarde)
+    'max' => 100,           // maximum
+    'variant' => 'success', // success | warning | danger
+    'label' => '',          // string
+    'showPercentage' => true, // bool
+])
+```
+
+**Berekening:** `width% = min(100, max(0, (value / max) * 100))`. Variant bepaalt de balk-kleur: success = `bg-brand-green`, warning = `bg-warning`, danger = `bg-danger`.
+
+**ARIA:** `role="progressbar"`, `aria-valuenow={value}`, `aria-valuemin="0"`, `aria-valuemax={max}`.
+
+#### `<x-ui.skeleton>`
+
+```php
+@props([
+    'type' => 'text',       // text | card | chart | avatar
+    'lines' => 3,           // integer (voor type=text)
+])
+```
+
+**Implementatie:** Pulserende placeholder (`animate-pulse bg-surface rounded`). Types:
+- `text`: N regels van variërende breedte (100%, 80%, 60%)
+- `card`: Rechthoek 100% × 120px met rounded-card
+- `chart`: Rechthoek 100% × 200px
+- `avatar`: Cirkel 40px (sm), 48px (md), 56px (lg)
+
+#### `<x-ui.stat-card>`
+
+```php
+@props([
+    'title' => '',          // string (KPI-label)
+    'value' => '',          // string|number (hoofdwaarde)
+    'trend' => 'neutral',   // up | down | neutral
+    'trendValue' => '',     // string (bijv. "+12%")
+    'icon' => null,         // optioneel SVG-icoon
+])
+```
+
+**Implementatie:** Wraps `<x-ui.card>` met een gekleurde accent-rand links: `border-l-4`. Trend up = `border-brand-green` + groene pijl, trend down = `border-danger` + rode pijl, neutral = `border-hairline`.
+
+#### `<x-ui.avatar>`
+
+```php
+@props([
+    'name' => '',           // string (voor initialen)
+    'size' => 'md',         // sm (32px) | md (40px) | lg (48px)
+    'src' => null,          // optioneel foto-URL
+])
+```
+
+**Initialen-algoritme:** Neem eerste letter van eerste woord + eerste letter van laatste woord. Fallback naar eerste 2 letters als er maar 1 woord is. Achtergrondkleur deterministisch op basis van naam-hash (6 voorgedefinieerde kleuren).
+
+### Nieuwe Services
+
+#### `DashboardAggregationService`
+
+Verantwoordelijk voor het berekenen van alle KPI-data voor het manager/owner dashboard in één efficiënte query-batch.
+
+```php
+class DashboardAggregationService
+{
+    /**
+     * @return array{
+     *   total_hours_this_week: int,        // netto-minuten
+     *   total_hours_prev_week: int,        // voor trend-berekening
+     *   attendance_percentage: int,         // 0-100
+     *   pending_leave_count: int,
+     *   atw_critical_count: int,
+     *   atw_warning_count: int,
+     *   open_objections_count: int,
+     *   sick_percentage: float,
+     *   chart_data: array<string, int>,    // [dag => minuten]
+     *   activity_feed: array,              // laatste 10 events
+     * }
+     */
+    public function getKpiData(User $user, ?int $teamFilter = null): array;
+}
+```
+
+#### `LeaveBalanceService`
+
+Berekent verlof-saldo met ondersteuning voor half-dag verlof en verlof-types.
+
+```php
+class LeaveBalanceService
+{
+    /**
+     * @return array{
+     *   annual_days: int|null,
+     *   taken_days: float,          // 0.5 per half-dag
+     *   remaining_days: float|null,
+     *   status: 'ok'|'warning'|'danger'|'unconfigured',
+     *   breakdown: array<string, float>,  // per leave_type
+     * }
+     */
+    public function getBalance(int $userId, int $year): array;
+
+    /**
+     * Tel alleen entries met:
+     * - type = LEAVE
+     * - is_finalized = true (of PENDING voor reservering)
+     * - deleted_at IS NULL
+     * - leave_type.counts_towards_balance = true
+     * - entry_date in het opgegeven jaar
+     * Half-dag (start=00:00,end=12:30 of start=12:30,end=23:59) telt als 0.5
+     */
+    public function calculateTakenDays(int $userId, int $year): float;
+}
+```
+
+### Design Tokens (bestaand, hergebruiken)
+
+Alle UI gebruikt uitsluitend de tokens uit `tailwind.config.js`:
+
+| Token | Waarde | Gebruik in deze feature |
 |---|---|---|
-| `WorkEntriesModuleController` | CRUD werkregels | `POST/GET /work-entries`, **NIEUW** `GET/PATCH/DELETE /work-entries/{id}`, **NIEUW** `POST /work-entries/copy-week` |
-| `WorkEntriesService` | Validatie + opslag werkregels | `create`, **NIEUW** `update`, **NIEUW** `delete`, **NIEUW** `copyWeek` |
-| `AtwService` + `AtwEngine` | ATW-controles | `validateProposedShift`, `evaluate`; **NIEUW** check `PAUSE_REQUIRED` als signaal én HTTP 422 |
-| `ProjectsModuleController` (NIEUW) | CRUD projecten | `GET/POST /projects`, `GET/PATCH/DELETE /projects/{id}` |
-| `ProjectsService` (NIEUW) | Validatie + autorisatie | — |
-| `CostCentersModuleController` (NIEUW) | CRUD kostenplaatsen | `GET/POST /cost-centers`, `GET/PATCH/DELETE /cost-centers/{id}` |
-| `CostCentersService` (NIEUW) | — | — |
-| `ReportsModuleController` | Rapportages | `GET /reports/work-entries/{pdf,excel}`, **NIEUW** `GET /reports/cost-overview`, **NIEUW** `GET /reports/year-export` |
-| `ReportQueryService` | Query + aggregaties | **NIEUW** `costOverview`, **NIEUW** `yearExport` |
-| `AccountsModuleController` (NIEUW) | Account-CRUD met AVG | `POST /accounts` (bestond als `/auth/accounts`), **NIEUW** `DELETE /accounts/{id}`, **NIEUW** `GET /accounts/{id}/data-export` |
-| `AccountProvisioningService` | Aanmaak + welkomstmail | reeds aanwezig — uitbreiden met `welcome_email` template (i.p.v. ad-hoc body) |
-| `DataExportService` (NIEUW) | AVG inzage-export | `exportFor(userId)` |
-| `RetentionService` | 7-jaar pseudonimisering | bestaand, uit te breiden met `pseudonymize(userId)` |
-| `HolidaysModuleController` (NIEUW) | NL feestdagen | `GET /holidays?year=` |
-| `HolidaysImportCommand` (NIEUW) | Artisan import | `php artisan holidays:import {year}` |
-| `EmailFlowsModuleController` | Templates + dispatch | bestaand, **NIEUW** templates: `welcome_email`, `work_entry_updated`, `work_entry_deleted`, `pending_input_reminder`, `anniversary`, `atw_warning`, `atw_critical` |
-| `PendingInputReminderService` + `RunPendingInputReminderCommand` | Herinneringen | bestaand, uit te breiden met opt-out check |
-| `AnniversaryNotificationService` (NIEUW) + `RunAnniversaryNotificationCommand` (NIEUW) | Jubilea | dagelijks 06:00 |
-| `BookkeeperReadonly` middleware (NIEUW) | Read-only afdwingen | aliased `bookkeeper.readonly` |
-| `BackupVerifyCommand` (NIEUW) | Backup-integriteit | `php artisan backup:verify` |
+| `brand-green` | `#00d4a4` | Positive trend accent, WORK-kleurcodering, progress success |
+| `danger` | `#ef4444` | SICK-kleurcodering, error toast, negative trend |
+| `warning` | `#f59e0b` | ATW-waarschuwingen, warning toast |
+| `surface` | `#f7f7f7` | Totaal-rij achtergrond, skeleton pulse |
+| `hairline` | `#e5e5e5` | Lege cel border, card borders |
+| `ink` | `#0a0a0a` | Body tekst |
+| `steel` | `#5a5a5c` | Secundaire tekst, "Geen registratie" |
+| `canvas` | `#FFFFFF` | Pagina-achtergrond, lege cellen |
 
-### Frontend componenten (Livewire)
+**Kleurcodering werkregel-types (Color_Coding):**
 
-| Scherm (Req 6) | Route | Livewire-component |
+| Type | Achtergrond | Border-left | Tijdlijn-balk |
+|---|---|---|---|
+| WORK | `bg-emerald-50` | `border-brand-green` | `bg-brand-green` |
+| SICK | `bg-red-50` | `border-danger` | `bg-danger` |
+| LEAVE | `bg-blue-50` | `border-blue-500` | `bg-blue-500` |
+| HOLIDAY | `bg-purple-50` | `border-purple-500` | `bg-purple-500` |
+| Leeg | `bg-canvas` | `border-dashed border-hairline` | — |
+
+### Livewire Events (inter-component communicatie)
+
+| Event | Dispatcher | Listener | Payload |
+|---|---|---|---|
+| `toast` | Alle componenten | Alpine.js toastManager | `{variant, message, duration?}` |
+| `entry-saved` | EntryFormModal | WeekOverviewTable, MyWeek | `{employeeId, entryDate}` |
+| `open-entry-form-modal` | WeekOverviewTable | EntryFormModal | `{employeeId, entryDate}` |
+| `copy-week-completed` | WeekOverviewTable | WeekOverviewTable (self) | `{created, skipped}` |
+| `leave-cancelled` | LeaveForm | EmployeeHome, LeaveCalendar | `{entryId}` |
+| `leave-type-updated` | LeaveTypesManager | LeaveForm, LeaveCalendar | `{}` |
+
+### Keyboard Shortcuts (Alpine.js)
+
+| Shortcut | Context | Actie |
 |---|---|---|
-| Inlog + MFA + QR | `/inloggen`, `/mfa-verify`, `/mfa-setup` | `Auth\LoginForm`, `Auth\MfaVerifyForm`, `Auth\MfaSetupQr` |
-| Wachtwoord vergeten/reset | `/wachtwoord-vergeten`, `/wachtwoord-reset` | `Auth\PasswordForgotForm`, `Auth\PasswordResetForm` |
-| Weekoverzicht admin/manager | `/uren/week` | `Hours\WeekOverviewTable` |
-| Invoermodal (live netto + ATW) | modal binnen `Hours\WeekOverviewTable` | `Hours\EntryFormModal` |
-| Medewerker-urenstaat | `/uren/mijn-week` | `Hours\MyWeek` |
-| ATW-statusdashboard | `/atw` | `Atw\StatusDashboard` |
-| Bezwaar beoordelen | `/bezwaren/{id}` | `Objections\ReviewForm` |
-| Rapportages & export | `/rapportages` | `Reports\Filters`, `Reports\YearExport` |
-| Accountbeheer | `/accounts` | `Accounts\List`, `Accounts\Form` |
-| Managementdashboard | `/dashboard` | `Dashboard\ManagerHome` |
-| Verlof/ziekte invoer | `/verlof` | `Hours\LeaveForm` |
-| E-mailcycli beheer | `/instellingen/email` | `Settings\EmailTemplates` |
-
-### Design tokens (verplicht in alle UI)
-
-**Kleuren**
-
-| Token | Hex | Gebruik |
-|---|---|---|
-| `--canvas` | `#FFFFFF` | Achtergrond pagina |
-| `--primary` | `#0a0a0a` | Primaire CTA, tekst |
-| `--on-primary` | `#FFFFFF` | Tekst op primary |
-| `--brand-green` | `#00d4a4` | UITSLUITEND accent CTA + active states + focus-ring |
-| `--surface` | `#f7f7f7` | Card-achtergrond, neutrale velden |
-| `--hairline` | `#e5e5e5` | Borders |
-| `--ink` | `#0a0a0a` | Body-tekst |
-| `--steel` | `#5a5a5c` | Secundaire tekst |
-| status `vastgesteld` | bg `#DCFCE7` / text `#166534` | Badge urenstatus |
-| status `bezwaar` | bg `#FEF9C3` / text `#854D0E` | Badge bezwaar |
-| status `concept` | bg `#f7f7f7` / text `#5a5a5c` | Badge concept/leeg |
-
-**Typografie**
-
-| Token | Specs | Gebruik |
-|---|---|---|
-| heading-2 | Inter 600, 36/1.20 | Paginatitels |
-| body-md | Inter 400, 16/1.50 | Body |
-| body-sm | Inter 400, 14/1.50 | Tabellen, hulpteksten |
-| button-md | Inter 500, 14/1.30 | Knoptekst |
-| code | Geist Mono | Tijden, tabellen, codes |
-
-**Border-radius**
-
-| Token | Px |
-|---|---|
-| button | 9999 (pill) |
-| card | 12 |
-| input | 8 |
-
-**Componenten**
-
-| Token | CSS |
-|---|---|
-| `button-primary` | `bg #0a0a0a; color #FFF; padding 10px 20px; border-radius 9999px;` |
-| `button-secondary` | `bg transparent; color #0a0a0a; border 1px solid #e5e5e5; padding 10px 20px; border-radius 9999px;` |
-| `card-base` | `bg #fff; border 1px solid #e5e5e5; border-radius 12px; padding 24px;` |
-| `text-input` | `bg #fff; border 1px solid #e5e5e5; border-radius 8px; height 40px; font-size 14px;` |
-| `text-input:focus` | `border 2px solid #00d4a4; outline-offset 2px;` |
-
-**Grid**
-
-| Breakpoint | Layout |
-|---|---|
-| Desktop ≥1280 | 3-koloms: sidebar 240px / content max 720px / TOC 200px |
-| Tablet 768-1279 | 2-koloms: sidebar 240px / content fluid |
-| Mobiel <768 | 1-koloms, hamburger-menu |
-| max-width | 1280px, gutters 32px |
+| `Enter` | EntryFormModal open + velden gevuld | Submit formulier |
+| `Escape` | EntryFormModal open | Sluit modal |
+| `Escape` | Bevestigingsmodal open | Sluit modal |
+| `←` / `→` | WeekOverviewTable, MyWeek, LeaveCalendar | Vorige/volgende week/maand |
 
 ## Data Models
 
-### Bestaande tabellen (relevante kolommen)
-
-```mermaid
-erDiagram
-  organizations ||--o{ users : "1—N"
-  organizations ||--o{ teams : "1—N"
-  teams ||--o{ users : "1—N"
-  users ||--o{ work_entries : "employee_id"
-  users ||--o{ work_entries : "registered_by_id"
-  organizations ||--o{ work_entries : "1—N"
-  work_entries ||--o{ objections : "1—N"
-  work_entries ||--o{ atw_violations : "1—N"
-  users ||--o{ atw_violations : "user_id"
-  users ||--o{ auth_sessions : "1—N"
-  users ||--|| mfa_secrets : "1—1"
-  organizations ||--o{ email_outbox : "1—N"
-  email_outbox ||--o{ email_outbox_events : "1—N"
-  organizations ||--o{ audit_events : "1—N"
-  organizations ||--o{ system_job_runs : "1—N"
-  organizations ||--o{ email_templates : "1—N"
-```
-
-### Nieuwe tabellen
-
-**`projects`** (Req 2)
+### Nieuwe tabel: `leave_types`
 
 ```sql
-CREATE TABLE projects (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  organization_id BIGINT UNSIGNED NOT NULL,
-  code VARCHAR(40) NOT NULL,
-  name VARCHAR(120) NOT NULL,
-  description VARCHAR(500) NULL,
-  hourly_rate DECIMAL(8,2) NULL,
-  is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  archived_at TIMESTAMP NULL,
-  created_at TIMESTAMP NULL,
-  updated_at TIMESTAMP NULL,
-  UNIQUE KEY uq_projects_org_code (organization_id, code),
-  INDEX idx_projects_org_active (organization_id, is_active),
-  CONSTRAINT fk_projects_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+CREATE TABLE leave_types (
+    id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+    organization_id BIGINT UNSIGNED NOT NULL,
+    code VARCHAR(40) NOT NULL,
+    name VARCHAR(120) NOT NULL,
+    description VARCHAR(500) NULL,
+    max_days_per_year SMALLINT UNSIGNED NULL,
+    counts_towards_balance BOOLEAN NOT NULL DEFAULT TRUE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NULL,
+    updated_at TIMESTAMP NULL,
+    UNIQUE KEY uq_leave_types_org_code (organization_id, code),
+    INDEX idx_leave_types_org_active (organization_id, is_active),
+    CONSTRAINT fk_leave_types_org FOREIGN KEY (organization_id)
+        REFERENCES organizations(id) ON DELETE CASCADE
 );
 ```
 
-**`cost_centers`** (Req 2)
+### Kolom-toevoegingen: `users`
 
 ```sql
-CREATE TABLE cost_centers (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  organization_id BIGINT UNSIGNED NOT NULL,
-  code VARCHAR(40) NOT NULL,
-  name VARCHAR(120) NOT NULL,
-  description VARCHAR(500) NULL,
-  is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  archived_at TIMESTAMP NULL,
-  created_at TIMESTAMP NULL,
-  updated_at TIMESTAMP NULL,
-  UNIQUE KEY uq_costc_org_code (organization_id, code),
-  INDEX idx_costc_org_active (organization_id, is_active),
-  CONSTRAINT fk_costc_org FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
-);
+ALTER TABLE users
+    ADD COLUMN annual_leave_days SMALLINT UNSIGNED NULL
+        COMMENT 'Jaarlijks verlofrecht in dagen' AFTER team_id;
 ```
 
-**`work_entries` — kolom-additions** (Req 2, Req 1)
+### Kolom-toevoegingen: `work_entries`
 
 ```sql
 ALTER TABLE work_entries
-  ADD COLUMN project_id BIGINT UNSIGNED NULL AFTER team_id,
-  ADD COLUMN cost_center_id BIGINT UNSIGNED NULL AFTER project_id,
-  ADD COLUMN deleted_at TIMESTAMP NULL AFTER updated_at,
-  ADD INDEX idx_we_project (project_id),
-  ADD INDEX idx_we_cost_center (cost_center_id),
-  ADD INDEX idx_we_deleted_at (deleted_at),
-  ADD CONSTRAINT fk_we_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
-  ADD CONSTRAINT fk_we_cost_center FOREIGN KEY (cost_center_id) REFERENCES cost_centers(id) ON DELETE SET NULL;
+    ADD COLUMN leave_type_id BIGINT UNSIGNED NULL AFTER type,
+    ADD INDEX idx_we_leave_type (leave_type_id),
+    ADD CONSTRAINT fk_we_leave_type FOREIGN KEY (leave_type_id)
+        REFERENCES leave_types(id) ON DELETE SET NULL;
 ```
 
-**`holidays`** (Req 7)
+### Seed-data: standaard verlof-types
 
-```sql
-CREATE TABLE holidays (
-  id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
-  year SMALLINT UNSIGNED NOT NULL,
-  date DATE NOT NULL,
-  name VARCHAR(80) NOT NULL,
-  is_national BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMP NULL,
-  updated_at TIMESTAMP NULL,
-  UNIQUE KEY uq_holidays_year_date (year, date)
-);
-```
+Bij organisatie-aanmaak worden 4 standaard verlof-types geseeded:
 
-**`users` — kolom-additions**
+| Code | Naam | counts_towards_balance | max_days_per_year |
+|---|---|---|---|
+| `VAKANTIE` | Vakantieverlof | true | null |
+| `BIJZONDER` | Bijzonder verlof | false | null |
+| `ONBETAALD` | Onbetaald verlof | false | null |
+| `OUDERSCHAP` | Ouderschapsverlof | false | null |
 
-| Kolom | Type | Doel |
+### E-mail templates (uitbreiding)
+
+Nieuwe templates in `email_templates`:
+
+| Type | Trigger | Placeholders |
 |---|---|---|
-| `email_reminders_opt_in` | BOOLEAN DEFAULT TRUE | Req 9 — opt-out per gebruiker |
-| `email_index_hash` | CHAR(64) NULL UNIQUE | Req 12 — deterministische SHA-256 voor login lookup |
-| `phone` | VARCHAR(40) NULL (encrypted cast) | Req 12 — optioneel |
-| `deleted_at` | TIMESTAMP NULL | Req 10 — soft-delete |
-| `deleted_by_id` | BIGINT UNSIGNED NULL | Req 10 — auditing |
+| `leave_approved` | Verlof goedgekeurd | `full_name, leave_date, leave_type, approved_by` |
+| `leave_rejected` | Verlof afgewezen | `full_name, leave_date, leave_type, rejected_by, reason` |
+| `leave_requested` | Nieuwe verlofaanvraag | `employee_name, leave_date, leave_type, note` |
+| `leave_reminder` | 3 werkdagen onbehandeld | `manager_name, employee_name, leave_date` |
 
-`users.full_name`, `users.email`, `users.phone` krijgen Laravel `encrypted` cast in het User-model. Login vergelijkt op `email_index_hash = SHA2(LOWER(email), 256)`.
+### Audit-events (nieuwe types)
 
-**`audit_events`** krijgt nieuwe `event_type`-waardes: `WORK_ENTRY_UPDATED`, `WORK_ENTRY_DELETED`, `ATW_VIOLATION_BLOCKED`, `PROJECT_CREATED/UPDATED/DELETED`, `COST_CENTER_CREATED/UPDATED/DELETED`, `ACCOUNT_PSEUDONYMIZED`, `ANNIVERSARY_DISPATCHED`, `BACKUP_INTEGRITY_FAILED`, `BACKUP_JOB_FAILED`.
+| Event type | Trigger |
+|---|---|
+| `LEAVE_ALLOWANCE_UPDATED` | Owner wijzigt annual_leave_days |
+| `LEAVE_CANCELLED` | Medewerker annuleert pending verlof |
+| `LEAVE_TYPE_CREATED` | Owner maakt verlof-type aan |
+| `LEAVE_TYPE_UPDATED` | Owner wijzigt verlof-type |
+| `LEAVE_TYPE_DEACTIVATED` | Owner deactiveert verlof-type |
+| `WEEK_COPIED` | Manager/owner kopieert week |
 
-**`organizations`** krijgt kolom `pending_input_threshold_days` (TINYINT UNSIGNED DEFAULT 3, CHECK 1..14).
-
-### Email templates (uitbreiding `email_templates`)
-
-11 templates met placeholders, NL-default-body, key kolom `type`:
-
-| `type` | Trigger | Placeholders |
-|---|---|---|
-| `welcome_email` | account-create | `full_name, email, role, organization_name, login_url, reset_link, valid_hours` |
-| `password_reset` | request-reset | `full_name, reset_link, valid_hours` |
-| `work_entry_finalized` | POST work-entries | `full_name, entry_date, net_minutes` |
-| `work_entry_updated` | PATCH work-entries | `full_name, entry_date, changes_summary` |
-| `work_entry_deleted` | DELETE work-entries | `full_name, entry_date, reason` |
-| `objection_review` | POST objections review | `full_name, decision, motivation` |
-| `atw_warning` | ATW signal warning | `full_name, signal_type, current_minutes, threshold_minutes` |
-| `atw_critical` | ATW signal critical | `full_name, signal_type, current_minutes, threshold_minutes` |
-| `pending_input_reminder` | scheduler | `manager_name, employee_name, days_missing` |
-| `monthly_report` | scheduler | `manager_name, period, totals_url` |
-| `anniversary` | scheduler | `full_name, years, employment_start` |
-
-### Foutcodes (HTTP 422 / 403 / 409)
-
-| Code | HTTP | Bron |
-|---|---|---|
-| `ATW_PAUSE_REQUIRED` | 422 | Req 4.1 |
-| `ATW_WEEKLY_MAX_EXCEEDED` | 422 | Req 4.3 |
-| `ATW_DAILY_MAX_EXCEEDED` | 422 | Req 4.4 |
-| `ATW_REST_PERIOD_VIOLATED` | 422 | Req 4.5 |
-| `READ_ONLY_ROLE` | 403 | Req 3 |
-| `FORBIDDEN_ROLE` | 403 | Req 1, 2, 8 |
-| `FORBIDDEN_TEAM_SCOPE` | 403 | Req 1.2 |
-| `FORBIDDEN_OWNER_SCOPE` | 403 | Req 1.3 |
-| `FORBIDDEN_DATA_EXPORT` | 403 | Req 10.4 |
-| `OBJECTION_OPEN` | 409 | Req 1.8 |
-| `OPEN_OBJECTIONS` | 409 | Req 10.7 |
-| `PROJECT_ORG_MISMATCH` | 422 | Req 2.9 |
-| `COST_CENTER_ORG_MISMATCH` | 422 | Req 2.9 |
-| `PROJECT_INACTIVE` | 422 | Req 2.10 |
-| `COST_CENTER_INACTIVE` | 422 | Req 2.10 |
-| `INVALID_TYPE_FOR_ROLE` | 422 | Req 7.2 |
-| `SOURCE_WEEK_EMPTY` | 422 | Req 8.2 |
-| `WELCOME_EMAIL_FAILED` | 500 | Req 5.4 |
-
-## Scheduler-jobs (overzicht)
-
-| Job | Cron (Europe/Amsterdam) | Console-command |
-|---|---|---|
-| Backup | dagelijks 02:00 | `backup:run` (spatie/laravel-backup) |
-| Backup-integriteit | dagelijks 03:00 | `backup:verify` (NIEUW) |
-| Pending-input herinnering | dagelijks 08:00 | `RunPendingInputReminderCommand` (uitbreiden) |
-| Jubilea | dagelijks 06:00 | `RunAnniversaryNotificationCommand` (NIEUW) |
-| Maandelijkse rapportage | maandelijks 1e 04:00 | bestaand `MonthlyReportRun` mechanisme |
-| Retentie + pseudonimisering | maandelijks 1e 03:00 | `RunRetentionCommand` (uitbreiden) |
-| Email-evidence integriteit | dagelijks 04:00 | `RunEmailEvidenceIntegrityCommand` (bestaand) |
-
-## Encryptie- en TLS-strategie
-
-- **In transit:** TLS 1.3 op Cloud86/Plesk; cipher `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`, `TLS_AES_128_GCM_SHA256`. HSTS `max-age=31536000; includeSubDomains; preload`. HTTP→HTTPS 308 redirect via Plesk-rule.
-- **At-rest (host):** MySQL data-directory op LUKS-versleutelde volume (Cloud86-hostingstap, gedocumenteerd in `docs/technical/infrastructuur.md`).
-- **At-rest (applicatie):** Laravel `encrypted` cast op `users.full_name`, `users.email`, `users.phone` met `APP_KEY` (AES-256-CBC) + `APP_PREVIOUS_KEYS` voor rotatie.
-- **E-mail lookups:** deterministische SHA-256 hash in `users.email_index_hash` (uniek per kolom), gevuld via migratie + observer; encrypted email zelf wordt nooit als index gebruikt.
-- **Sleutelbeheer:** `APP_KEY` in `.env` met `chmod 600`; rotatie elke 12 maanden via `php artisan key:rotate` (bestaande Laravel-feature) met behoud van `APP_PREVIOUS_KEYS` 90 dagen.
-- **Backup-encryptie:** `spatie/laravel-backup` met `encryption: aes-256-cbc` en sleutel los van `APP_KEY` (`BACKUP_ARCHIVE_PASSWORD` env).
-
-## Email-systeem
-
-Bestaand: `email_outbox` (append-only, idempotency-key, evidence-trail). Voor `welcome_email` wordt `EmailTemplateService::render($type, $vars)` aangeroepen i.p.v. ad-hoc body in `AccountProvisioningService`. Templates blijven bewerkbaar via `PUT /api/internal/email/templates/{type}` met versie-bewust archief (`email_template_versions`, indien nog niet aanwezig: aanmaken).
-
-Retry-policy: bestaande worker; default 5 retries, exponential backoff. Pseudonimisering log na 7 jaar via `RunRetentionCommand`.
-
-## Bezwaarprocedure (bestaand, in design verankerd)
+### ER-diagram uitbreiding
 
 ```mermaid
-stateDiagram-v2
-  [*] --> Concept : werkregel aangemaakt
-  Concept --> Vastgesteld : is_finalized = true
-  Vastgesteld --> Bezwaar : POST /objections
-  Bezwaar --> Akkoord : POST /objections/{id}/review accept + motivatie ≥10
-  Bezwaar --> Afgewezen : POST /objections/{id}/review reject + motivatie ≥10
-  Akkoord --> Vastgesteld : werkregel gecorrigeerd of bevestigd
-  Afgewezen --> Vastgesteld : werkregel ongewijzigd
+erDiagram
+    organizations ||--o{ leave_types : "1—N"
+    leave_types ||--o{ work_entries : "leave_type_id"
+    users ||--o{ work_entries : "employee_id"
+    work_entries {
+        bigint id PK
+        bigint employee_id FK
+        date entry_date
+        time start_at
+        time end_at
+        int pause_minutes
+        int net_minutes
+        string type
+        bigint leave_type_id FK "nullable, alleen bij LEAVE"
+        boolean is_finalized
+        timestamp deleted_at "soft-delete"
+    }
+    users {
+        bigint id PK
+        smallint annual_leave_days "nullable"
+        string role
+        bigint team_id FK
+        bigint organization_id FK
+    }
+    leave_types {
+        bigint id PK
+        bigint organization_id FK
+        string code "uniek per org"
+        string name
+        smallint max_days_per_year "nullable"
+        boolean counts_towards_balance
+        boolean is_active
+    }
 ```
-
 
 ## Correctness Properties
 
 *Een property is een eigenschap of gedrag dat universeel waar moet zijn over alle geldige uitvoeringen van het systeem — een formele uitspraak over wat het systeem moet doen. Properties vormen de brug tussen leesbare specificaties en machine-verifieerbare correctheidsgaranties.*
 
-PBT IS van toepassing op de pure-functie-componenten in deze feature: ATW-engine, netto-minuten-berekening, copy-week-transformatie, project-aggregaties (cost-overview), feestdagen-berekening, welcome-mail-rendering, encryptie-roundtrip en pseudonimisering. PBT is NIET van toepassing op het visuele renderen van Livewire-schermen, op TLS- en backup-cron (infrastructuur), op documentatie-deliverables, en op de meeste autorisatie-rules; daarvoor gebruiken we voorbeeldgebaseerde tests, snapshot-tests en integratie-tests (zie Testing Strategy).
+### Property 1: Netto-minuten berekening is correct
 
-### Property 1: Netto-minuten-berekening klopt
+*Voor elke* `(start_time, end_time, pause_minutes)` met `end_time > start_time` en `pause_minutes ∈ [0, 480]`, geldt dat de berekende `net_minutes == max(0, (end_time - start_time)_in_minutes - pause_minutes)`.
 
-*Voor elke* `(start_time, end_time, pause_minutes)` met `end_time > start_time` op dezelfde datum en `pause_minutes ∈ [0, 240]`, geldt na `POST` of `PATCH` op `/api/internal/work-entries(/{id})` dat `net_minutes == max(0, ((end_time - start_time)_minutes) - pause_minutes)`.
+**Validates: Requirements 6.3**
 
-**Validates: Requirements 1.4**
+### Property 2: Weekoverzicht totalen zijn consistent met individuele cellen
 
-### Property 2: Cost-overview-aggregatie is correct
+*Voor elke* set werkregels in een week, geldt: (a) de totaal-kolom per medewerker is gelijk aan de som van `net_minutes` van alle werkregels van die medewerker in die week, (b) de totaal-rij per dag is gelijk aan de som van `net_minutes` van alle medewerkers op die dag, en (c) de Grand_Total is gelijk aan de som van alle totaal-kolommen (of equivalente som van alle totaal-rijen).
 
-*Voor elke* willekeurige set werkregels met `project_id` en `hourly_rate`, retourneert `GET /api/internal/reports/cost-overview` per project `total_minutes = SUM(net_minutes)`, `total_hours = total_minutes/60`, en `total_cost = total_hours * hourly_rate` (of `null` indien `hourly_rate` is `null`), waarbij de gegroepeerde sommen exact overeenkomen met de handmatige som over de gefilterde werkregels.
+**Validates: Requirements 4.3, 4.4, 4.5**
 
-**Validates: Requirements 2.8**
+### Property 3: Kleurcodering is deterministisch per type
 
-### Property 3: Boekhouder is read-only over alle non-GET methodes
+*Voor elke* werkregel met een `type ∈ {WORK, SICK, LEAVE, HOLIDAY}`, geldt dat de toegekende CSS-klassen (achtergrond + border) uitsluitend afhangen van het `type`-veld en niet van `is_finalized`, `employee_id`, `entry_date` of andere attributen. De mapping is: WORK → `(bg-emerald-50, border-brand-green)`, SICK → `(bg-red-50, border-danger)`, LEAVE → `(bg-blue-50, border-blue-500)`, HOLIDAY → `(bg-purple-50, border-purple-500)`.
 
-*Voor elke* HTTP-methode `m ∈ {POST, PUT, PATCH, DELETE}` en elke endpoint binnen `/api/internal/*` (excl. `/auth/logout`), levert een verzoek door een gebruiker met rol `boekhouder` HTTP 403 met code `READ_ONLY_ROLE`.
+**Validates: Requirements 4.1, 4.10, 7.2, 8.2**
 
-**Validates: Requirements 3.3, 3.4, 3.5, 3.6**
+### Property 4: Data-scoping per rol is waterdicht
 
-### Property 4: ATW-pauzeplicht wordt afgedwongen
+*Voor elke* manager-gebruiker met `team_id = T`, geldt dat alle data geretourneerd door dashboard-KPI's, weekoverzicht en verlofkalender uitsluitend werkregels, gebruikers en violations bevat waarvoor `user.team_id = T`. *Voor elke* owner-gebruiker geldt dat alle data beperkt is tot `user.organization_id = O` (de eigen organisatie).
 
-*Voor elke* shift-input `(start, end, pause_minutes)` waarvoor `(end - start)_minutes > 330` (5,5u) en `pause_minutes < 30`, levert `POST` of `PATCH` op `/api/internal/work-entries(/{id})` HTTP 422 met code `ATW_PAUSE_REQUIRED`, en de werkregel is niet aanwezig in `work_entries`.
+**Validates: Requirements 1.8, 8.3**
 
-**Validates: Requirements 4.1**
+### Property 5: Verlof-saldo berekening is correct
 
-### Property 5: 60u-weekgrens blokkeert hard
+*Voor elke* medewerker met `annual_leave_days = A` (niet null) en een willekeurige set verlof-werkregels in het huidige jaar, geldt: `remaining = A - taken`, waarbij `taken` de som is van: 1.0 voor elke hele-dag verlof-entry (type=LEAVE, is_finalized=true, deleted_at=null, leave_type.counts_towards_balance=true) en 0.5 voor elke halve-dag verlof-entry (herkenbaar aan start=00:00/end=12:30 of start=12:30/end=23:59).
 
-*Voor elke* combinatie van bestaande shifts en proposed shift waarbij de som van `net_minutes` binnen dezelfde ISO-week (ma-zo) ≥ `3600` minuten wordt, levert `POST` of `PATCH` HTTP 422 met code `ATW_WEEKLY_MAX_EXCEEDED` en is de proposed shift afwezig in de database.
+**Validates: Requirements 9.3, 9.4, 10.4, 10.9, 11.6**
 
-**Validates: Requirements 4.3**
+### Property 6: Copy-week verschuift entries exact 7 dagen
 
-### Property 6: ATW-engine produceert juiste signals per drempel
+*Voor elke* bronweek met werkregels van type WORK (zonder ATW-critical-signalen op de doelweek en zonder bestaande conflicten), geldt na copy-week: het aantal aangemaakte entries is gelijk aan het aantal bronentries, en voor elke gekopieerde entry `c` bestaat een bronentry `b` met `c.entry_date = b.entry_date + 7 dagen`, `c.start_at = b.start_at`, `c.end_at = b.end_at`, en `c.net_minutes = b.net_minutes`.
 
-*Voor elke* `(proposedShift, existingShifts, policy)` produceert `AtwEngine::evaluate(...)` een lijst signals die voldoet aan: (a) `DAILY_LIMIT` ⇔ `proposedShift.net_minutes ≥ policy.daily_max_minutes`; (b) `WEEKLY_WARNING` ⇔ `weeklyMinutes ∈ [policy.weekly_warning_minutes, policy.weekly_max_minutes)`; (c) `WEEKLY_LIMIT` ⇔ `weeklyMinutes ≥ policy.weekly_max_minutes`; (d) `SIXTEEN_WEEK_AVERAGE` ⇔ `floor(total16w/16) ≥ policy.average_16_week_minutes`; (e) `REST_PERIOD` ⇔ er is een vorige shift waarvan `(proposedStart - prevEnd)_minutes < 660`; (f) elke gevonden signal heeft `severity == 'warning'` voor `WEEKLY_WARNING` en `severity == 'critical'` voor de andere vier.
+**Validates: Requirements 5.3**
 
-**Validates: Requirements 4.2, 4.4, 4.5, 4.6, 4.9**
+### Property 7: Copy-week created + skipped = bron-totaal
 
-### Property 7: Validate-ATW en POST/PATCH zijn consistent
+*Voor elke* copy-week-aanroep geldt: `|created| + |skipped| = |bron_entries|`. Elke entry in `skipped` heeft een `reason ∈ {DUPLICATE, ATW_BLOCKED}`. Een entry is DUPLICATE als er al een entry bestaat op `(employee_id, target_date, start_time)`. Een entry is ATW_BLOCKED als de gekopieerde versie een ATW-critical-signal zou veroorzaken.
 
-*Voor elke* shift-input `X`, geldt: `POST /api/internal/work-entries/validate-atw` met `X` retourneert `has_critical == true` als en alleen als `POST /api/internal/work-entries` met dezelfde `X` HTTP 422 met een ATW-foutcode levert.
+**Validates: Requirements 5.4, 5.5, 5.6**
 
-**Validates: Requirements 4.8**
+### Property 8: Toast-variant bepaalt correcte styling en timing
 
-### Property 8: Welkomstmail render is volledig en lekt geen wachtwoord
+*Voor elke* toast met `variant ∈ {success, error, warning, info}`, geldt: (a) de CSS-klassen bevatten de juiste kleur (success=groen, error=rood, warning=oranje, info=blauw), (b) de auto-dismiss-duur is 5000ms voor success/warning/info en 8000ms voor error, (c) `role="alert"` en `aria-live="polite"` zijn aanwezig.
 
-*Voor elke* `(full_name, email, role, organization_name, login_url, reset_link, valid_hours)` aan `EmailTemplateService::render('welcome_email', vars)`, geldt: (a) de gerenderde `body_text` en `body_html` bevatten geen substring matching pattern `\{\{\s*\w+\s*\}\}` (geen onverwerkte placeholders); (b) elke placeholder-waarde uit `vars` komt minstens één keer voor in `body_text` of `body_html`; (c) het random-gegenereerde initieel wachtwoord van het account verschijnt nergens als substring in de mail.
+**Validates: Requirements 3.1, 3.5, 3.9, 3.10**
 
-**Validates: Requirements 5.1, 5.3, 5.5**
+### Property 9: Toast-queue toont maximaal 3 tegelijk
 
-### Property 9: SICK/LEAVE/HOLIDAY tellen niet mee in ATW-werktijd
+*Voor elk* aantal N ≥ 1 gelijktijdig gedispatchte toasts, geldt dat het aantal zichtbare toasts in de DOM op elk moment ≤ 3 is. Nieuwe toasts worden in de queue geplaatst en verschijnen zodra een zichtbare toast verdwijnt.
 
-*Voor elke* lijst werkregels van een medewerker, geldt dat de ATW-werktijd-totalen (`weeklyMinutes`, `total16Weeks`, `daily`) uitsluitend werkregels met `type = 'WORK'` sommeren; werkregels met `type ∈ {SICK, LEAVE, HOLIDAY, OTHER}` dragen 0 minuten bij aan deze totalen.
+**Validates: Requirements 3.6**
 
-**Validates: Requirements 7.8**
+### Property 10: Progress-bar breedte is proportioneel aan value/max
 
-### Property 10: Holidays-import berekent NL-feestdagen correct
+*Voor elke* `(value, max)` met `max > 0`, geldt dat de breedte van de progress-balk gelijk is aan `min(100, max(0, value / max * 100))` procent. De variant (success/warning/danger) bepaalt uitsluitend de kleur, niet de breedte.
 
-*Voor elk* jaar `Y ∈ [1900, 2099]`, produceert `php artisan holidays:import {Y}` exact de set Nederlandse nationale feestdagen volgens de algoritmische definitie: Nieuwjaarsdag (01-01), Goede Vrijdag (Pasen-2), Eerste Paasdag (Gauss-Pasen), Tweede Paasdag (Pasen+1), Koningsdag (27-04, of 26-04 als 27-04 zondag is), Bevrijdingsdag indien `Y mod 5 == 0` (05-05), Hemelvaart (Pasen+39), Eerste Pinksterdag (Pasen+49), Tweede Pinksterdag (Pasen+50), Eerste Kerstdag (25-12), Tweede Kerstdag (26-12).
+**Validates: Requirements 12.3**
 
-**Validates: Requirements 7.5**
+### Property 11: Avatar-initialen worden correct afgeleid
 
-### Property 11: Copy-week verschuift entries 7 dagen voorwaarts
+*Voor elke* naam-string met minstens 1 karakter, geldt: als de naam 2+ woorden bevat, zijn de initialen de eerste letter van het eerste woord + eerste letter van het laatste woord (hoofdletters). Als de naam 1 woord bevat, zijn de initialen de eerste 2 letters (of 1 letter als de naam 1 karakter is).
 
-*Voor elke* willekeurige bron-week werkregels van type `WORK` (zonder ATW-kritiek-signalen op de doel-week, en zonder bestaande conflicten in de doel-week), geldt na `POST /api/internal/work-entries/copy-week`: `created.length == bron.length`, en voor elke gekopieerde entry `c_i` bestaat een bron-entry `b_i` met `c_i.entry_date == b_i.entry_date + 7d`, `c_i.start_at == b_i.start_at + 7d`, `c_i.end_at == b_i.end_at + 7d`, en `c_i.net_minutes == b_i.net_minutes`.
+**Validates: Requirements 12.6**
 
-**Validates: Requirements 8.1**
+### Property 12: Slimme defaults tonen vorige werkdag-tijden
 
-### Property 12: Copy-week conflicts en ATW-blokkades verschijnen in skipped[]
+*Voor elke* medewerker die op de vorige werkdag (ma-vr, exclusief feestdagen) een werkregel van type WORK had met `start_at` en `end_at`, geldt dat bij het openen van de invoer-modal de placeholder-tekst "Vorige dag: [start] - [end]" wordt getoond met de exacte tijden van die vorige werkregel.
 
-*Voor elke* copy-week-aanroep, geldt: voor elke bron-entry `b` waarvoor in de doel-week reeds een entry op `(employee_id, target_date, start_time)` bestaat, verschijnt `b` in `skipped[]` met `reason == 'DUPLICATE'`; voor elke bron-entry `b` waarvoor de gekopieerde versie een ATW-`severity: critical`-signal zou veroorzaken, verschijnt `b` in `skipped[]` met `reason == 'ATW_BLOCKED'`; én `created.length + skipped.length == bron.length`.
+**Validates: Requirements 6.2**
 
-**Validates: Requirements 8.3, 8.4**
+### Property 13: Verlof-types dropdown toont alleen actieve types van eigen organisatie
 
-### Property 13: Pending-input-reminder respecteert opt-out en threshold
+*Voor elke* medewerker in organisatie O, geldt dat de verlof-type-dropdown bij verlof-aanvraag uitsluitend leave_types bevat waarvoor `organization_id = O` en `is_active = true`. Gedeactiveerde types verschijnen niet, types van andere organisaties verschijnen niet.
 
-*Voor elke* run van de scheduler met `threshold_days = N` en willekeurige werkhistorie per medewerker, geldt: voor iedere actieve medewerker `e` met `email_reminders_opt_in == true` die in de afgelopen `N` werkdagen (ma-vr) geen `WORK`-werkregels heeft, ontstaat exact één outbox-mail van type `pending_input_reminder` voor de manager(s) van diens team; voor elke medewerker met `email_reminders_opt_in == false` ontstaat geen `pending_input_reminder` of `monthly_report` mail.
+**Validates: Requirements 11.5, 11.9**
 
-**Validates: Requirements 9.4, 9.5**
+### Property 14: Goedgekeurd verlof kan niet geannuleerd worden
 
-### Property 14: Pseudonimisering behoudt urenintegriteit
+*Voor elke* verlof-werkregel met `is_finalized = true`, geldt dat een annuleringspoging wordt geweigerd (HTTP 409 met code `LEAVE_ALREADY_APPROVED`). De werkregel blijft ongewijzigd in de database.
 
-*Voor elke* gebruiker `u` met willekeurige werkregels en bezwaren, geldt na `DELETE /api/internal/accounts/{u.id}`: `count(work_entries WHERE employee_id = u.id)` is onveranderd, `sum(net_minutes WHERE employee_id = u.id)` is onveranderd, `count(objections WHERE work_entry_id IN ...)` is onveranderd; én `users.email`, `users.full_name`, `users.phone` zijn vervangen door pseudonieme waarden die niet de oorspronkelijke waarden bevatten als substring.
+**Validates: Requirements 10.8**
 
-**Validates: Requirements 10.1, 10.2**
+### Property 15: Verlof-herinnering respecteert opt-out en threshold
 
-### Property 15: Data-export bevat alle gegevens van de gebruiker
+*Voor elke* verlofaanvraag die langer dan 3 werkdagen onbehandeld is, geldt: als de medewerker `email_reminders_opt_in = true` heeft, wordt een `leave_reminder` mail gequeued voor de manager(s). Als `email_reminders_opt_in = false`, wordt geen herinnering verstuurd. Essentiële mails (goedkeuring/afwijzing) worden altijd verstuurd ongeacht opt-in status.
 
-*Voor elke* gebruiker `u` met werkregels, bezwaren, atw-violations en audit-events, retourneert `GET /api/internal/accounts/{u.id}/data-export` een JSON-object waarvan: `work_entries[]` exact gelijk is aan `SELECT * FROM work_entries WHERE employee_id = u.id`, `objections[]` exact gelijk is aan de bezwaren gekoppeld aan die werkregels, `atw_violations[]` exact gelijk is aan `WHERE user_id = u.id`, en `audit_events[]` minimaal alle records met `actor_id = u.id` of `target_user_id = u.id` bevat.
+**Validates: Requirements 13.5, 13.7**
 
-**Validates: Requirements 10.3**
+### Property 16: KPI-aggregatie is consistent met onderliggende data
 
-### Property 16: Jubileumdetectie voor jaren {1,5,10,25}
+*Voor elke* set werkregels in de huidige week binnen een scope (team of organisatie), geldt: (a) `total_hours_this_week` = SUM(net_minutes) van alle entries met deleted_at=null, (b) `attendance_percentage` = (distinct employee_ids met ≥1 entry) / (totaal actieve employees in scope) × 100, (c) `pending_leave_count` = COUNT(entries met type=LEAVE en is_finalized=false en deleted_at=null), (d) trend = total_hours_this_week - total_hours_prev_week (positief = up, negatief = down).
 
-*Voor elke* `today` (datum) en willekeurige set `users` met `employment_start`, geldt: het aantal `anniversary`-mails dat de scheduler genereert is gelijk aan `count(u in users where u.is_active && u.employment_start.month == today.month && u.employment_start.day == today.day && (today.year - u.employment_start.year) ∈ {1, 5, 10, 25})`.
+**Validates: Requirements 1.2, 1.3**
 
-**Validates: Requirements 11.2, 11.3**
+### Property 17: Tijdlijn-positie is proportioneel aan tijdstip
 
-### Property 17: Encryptie-roundtrip op users.email/full_name/phone
+*Voor elke* werkregel met `start_at` en `end_at` binnen het bereik 06:00-22:00, geldt dat de horizontale positie van de tijdlijnbalk berekend wordt als: `left% = (start_minutes - 360) / (1320 - 360) × 100` en `width% = (end_minutes - start_minutes) / (1320 - 360) × 100`, waarbij 360 = 06:00 in minuten en 1320 = 22:00 in minuten.
 
-*Voor elke* string `s` met lengte 1..255 en geldige UTF-8, geldt: `User::create(['email' => s, ...])` gevolgd door `User::find($id)->email` retourneert `s`; én `SELECT email FROM users WHERE id = $id` (raw SQL) retourneert een base64-payload die `s` niet bevat als substring; én `SELECT email_index_hash FROM users WHERE id = $id` is gelijk aan `hash('sha256', strtolower($s))`.
-
-**Validates: Requirements 12.1, 12.2**
+**Validates: Requirements 7.1**
 
 ## Error Handling
 
-| Foutbron | Strategie |
-|---|---|
-| ATW-overschrijding (kritiek) | HTTP 422 met specifieke `code`, audit-event `ATW_VIOLATION_BLOCKED`, geen DB-write |
-| ATW-overschrijding (warning) | DB-write toegestaan, `atw_violations`-record met `severity=warning`, mail-dispatch via outbox |
-| Autorisatie | HTTP 403 met code `READ_ONLY_ROLE` / `FORBIDDEN_ROLE` / `FORBIDDEN_TEAM_SCOPE` / `FORBIDDEN_OWNER_SCOPE` |
-| Conflict (objection open) | HTTP 409 met code `OBJECTION_OPEN` / `OPEN_OBJECTIONS` |
-| Validatie-fout (project/cost-center mismatch) | HTTP 422 met specifieke `code`; geen partial write |
-| Outbox-fout bij welkomstmail | DB-transactie rollback; HTTP 500 met code `WELCOME_EMAIL_FAILED` |
-| MFA-rotatie verlopen | HTTP 403 met code `MFA_ROTATION_REQUIRED` (bestaand) |
-| Backup-integriteit faalt | Audit-event + alert-mail; geen end-user impact |
-| Ongedefinieerde 500 | Generieke handler in `app/Exceptions/Handler.php`; logt naar `storage/logs/laravel.log` met request-id, geen stacktrace naar client |
+| Foutscenario | Strategie | Gebruikersfeedback |
+|---|---|---|
+| Copy-week: bronweek leeg | Geen DB-writes, early return | Toast (info): "Vorige week bevat geen werkregels om te kopiëren" |
+| Copy-week: duplicaat in doelweek | Skip entry, add to `skipped[]` | Toast (warning) met aantal overgeslagen + detail |
+| Copy-week: ATW-critical op doelweek | Skip entry, add to `skipped[]` | Toast (warning) met reden per entry |
+| Invoer-modal: ATW-critical | Blokkeer opslaan-knop | Rode banner boven knop met NL-melding |
+| Invoer-modal: ATW-warning | Sta opslaan toe | Oranje banner boven knop met NL-melding |
+| Invoer-modal: validatiefout | Houd modal open | Inline foutmelding bij betreffend veld (NL) |
+| Verlof annuleren: reeds goedgekeurd | HTTP 409 | Toast (error): "Dit verlof is al goedgekeurd en kan niet meer geannuleerd worden" |
+| Verlof-saldo: niet geconfigureerd | Widget verbergen | Geen foutmelding, widget simpelweg afwezig |
+| Verlof-type max bereikt | Soft limit, toon waarschuwing | Oranje banner: "Maximum [type] bereikt ([X] dagen per jaar)" |
+| Dashboard: geen data beschikbaar | Toon lege staat | "Geen gegevens beschikbaar voor deze periode" in steel-kleur |
+| Weekoverzicht: >15 medewerkers | Horizontaal scrollbaar | Sticky eerste kolom (namen) |
+| Verlofkalender: >20 medewerkers | Verticaal scrollbaar | Sticky header-rij (dagen) |
+| Print: geen werkregels | Toon lege tabel | Print-weergave met lege cellen |
+| Livewire poll: netwerk-timeout | Stille retry bij volgende poll-interval | Geen foutmelding (graceful degradation) |
 
-Alle response-bodies bij 4xx volgen formaat:
+### Foutcodes (nieuw voor deze feature)
 
-```json
-{ "error": "Mensleesbare NL-melding", "code": "MACHINE_LEESBARE_CODE", "errors": { "veld": ["specifieke foutmelding"] } }
-```
+| Code | HTTP | Context |
+|---|---|---|
+| `LEAVE_ALREADY_APPROVED` | 409 | Annulering van goedgekeurd verlof |
+| `LEAVE_TYPE_NOT_FOUND` | 422 | Ongeldig leave_type_id bij verlof-aanvraag |
+| `LEAVE_TYPE_INACTIVE` | 422 | Gedeactiveerd leave_type_id bij aanvraag |
+| `SOURCE_WEEK_EMPTY` | 422 | Copy-week zonder bronregels |
+| `FORBIDDEN_LEAVE_CALENDAR` | 403 | Employee probeert verlofkalender te openen |
+
+### Validatie-regels (Livewire-zijde)
+
+| Veld | Regels | NL-foutmelding |
+|---|---|---|
+| `startTime` | required, date_format:H:i | "Begintijd is verplicht" / "Formaat UU:MM" |
+| `endTime` | required, date_format:H:i, after:startTime | "Eindtijd is verplicht" / "Eindtijd moet na begintijd liggen" |
+| `pauseMinutes` | required, integer, min:0, max:480 | "Pauze is verplicht" / "Maximaal 480 minuten" |
+| `type` | required, in:WORK,SICK,LEAVE,HOLIDAY,OTHER | "Type is verplicht" |
+| `leaveTypeId` | required_if:type,LEAVE, exists:leave_types,id | "Verlof-type is verplicht bij verlof" |
+| `halfDay` | nullable, in:morning,afternoon | "Keuze ochtend of middag" |
+| `annual_leave_days` | nullable, integer, min:0, max:365 | "Verlofrecht moet 0-365 dagen zijn" |
 
 ## Testing Strategy
 
 ### Aanpak
 
-LaVita Urenregistratie hanteert een **drielagige teststrategie**:
+De teststrategie voor deze feature combineert **property-based tests** voor de pure logica-laag met **example-based tests** voor UI-interacties en integratie.
 
-1. **Unit & property tests** — Pest of PHPUnit, in-memory SQLite voor de meeste tests, MySQL bij encryptie-tests; dekken pure businesslogica (ATW-engine, copy-week, holidays-berekening, mail-rendering, pseudonimisering, encryptie-roundtrip).
-2. **Feature/integration tests** — Laravel HTTP-tests, dekken endpoints en autorisatie-rules per rol; per scherm minimaal één Livewire-feature-test.
-3. **Browser smoke** — Pest browser plugin (of Laravel Dusk), 1 happy-path per kritiek scherm, axe-core run voor WCAG-validatie.
+### Property-Based Tests (Pest + `pestphp/pest-plugin-faker`)
 
-### Property-Based Testing-bibliotheek
+**Library:** Pest PHP met custom generators (geen externe PBT-library nodig; we gebruiken Faker + loops voor 100+ iteraties per property).
 
-- Bibliotheek: **`pestphp/pest-plugin-properties`** (bovenop Pest v3) of `eris-php` als fallback.
-- Minimale iteraties: **100 per property-test**; ATW-properties draaien 200 iteraties wegens complexere generatoren.
-- Elke property-test krijgt een tag-comment in PHPDoc-stijl:
-  
-  ```php
-  /**
-   * @feature lavita-urenregistratie
-   * @property 6 ATW-engine produceert juiste signals per drempel
-   * @validates Requirements 4.2, 4.4, 4.5, 4.6, 4.9
-   */
-  ```
+**Configuratie:** Elke property-test draait minimaal 100 iteraties met random input.
 
-- Generatoren: Carbon-datums binnen `[2020-01-01, 2030-12-31]`, durations `[1, 1440]` minuten, pauzes `[0, 240]`, weeklymax-policies vast op orgs-defaults (`daily_max_minutes=720`, `weekly_warning_minutes=2880`, `weekly_max_minutes=3600`, `average_16_week_minutes=2880`).
+**Tag-formaat:** `// Feature: lavita-urenregistratie, Property {N}: {title}`
 
-### Voorbeeldgebaseerde unit/feature-tests
+| Property | Test-bestand | Wat wordt getest |
+|---|---|---|
+| 1: Netto-minuten | `tests/Unit/NetMinutesCalculationTest.php` | `EntryFormModal::getNetMinutes()` en `WorkEntriesService` formule |
+| 2: Weekoverzicht totalen | `tests/Unit/WeekTotalsTest.php` | Aggregatie-logica in WeekOverviewTable |
+| 3: Kleurcodering | `tests/Unit/ColorCodingTest.php` | Type → CSS mapping functie |
+| 4: Data-scoping | `tests/Feature/DataScopingTest.php` | Manager/owner scope filtering |
+| 5: Verlof-saldo | `tests/Unit/LeaveBalanceTest.php` | `LeaveBalanceService::calculateTakenDays()` |
+| 6-7: Copy-week | `tests/Unit/CopyWeekTest.php` | `CopyWeekService` transformatie + invarianten |
+| 8-9: Toast | `tests/Unit/ToastManagerTest.php` | Alpine.js toast queue (JS unit test) |
+| 10: Progress-bar | `tests/Unit/ProgressBarTest.php` | Breedte-berekening |
+| 11: Avatar-initialen | `tests/Unit/AvatarInitialsTest.php` | Initialen-extractie |
+| 12: Slimme defaults | `tests/Unit/SmartDefaultsTest.php` | Vorige-dag lookup logica |
+| 13: Verlof-types filter | `tests/Feature/LeaveTypesFilterTest.php` | Actieve types per org |
+| 14: Annulering blokkade | `tests/Feature/LeaveCancellationTest.php` | 409 bij goedgekeurd verlof |
+| 15: Herinnering opt-out | `tests/Feature/LeaveReminderTest.php` | Opt-out logica |
+| 16: KPI-aggregatie | `tests/Unit/KpiAggregationTest.php` | `DashboardAggregationService` |
+| 17: Tijdlijn-positie | `tests/Unit/TimelinePositionTest.php` | Positie-berekening |
 
-- Per CRUD-endpoint: happy path + autorisatie-403 + 404 (`Tests\Feature\Internal\WorkEntriesTest` etc).
-- Per Livewire-component: één test voor render + één voor interactie (`Tests\Feature\Ui\WeekOverviewTableTest` etc).
-- Per scheduler-command: één test voor "draait zonder fout" + één voor het hoofdpad (`Tests\Feature\Console\HolidaysImportCommandTest`).
+### Example-Based Tests (Pest Feature Tests)
 
-### Integration tests
+| Scenario | Test-bestand | Wat wordt getest |
+|---|---|---|
+| Dashboard rendert voor manager | `tests/Feature/Livewire/ManagerHomeTest.php` | KPI-cards, chart, skeleton, begroeting |
+| Dashboard rendert voor employee | `tests/Feature/Livewire/EmployeeHomeTest.php` | Progress bars, saldo, mini-week |
+| Weekoverzicht kleurcodering | `tests/Feature/Livewire/WeekOverviewTest.php` | Correcte CSS-klassen per type |
+| Copy-week happy path | `tests/Feature/Livewire/CopyWeekTest.php` | Entries aangemaakt, toast getoond |
+| Invoer-modal keyboard shortcuts | `tests/Feature/Livewire/EntryFormModalTest.php` | Enter/Escape gedrag |
+| Verlofkalender autorisatie | `tests/Feature/Livewire/LeaveCalendarTest.php` | 403 voor employee |
+| Half-dag verlof aanvraag | `tests/Feature/Livewire/LeaveFormTest.php` | Correcte start/end tijden |
+| Verlof annuleren | `tests/Feature/Livewire/LeaveCancelTest.php` | Soft-delete + audit |
+| Toast stacking | `tests/Browser/ToastTest.php` | Max 3 zichtbaar (Dusk) |
+| Print-weergave | `tests/Feature/Livewire/PrintTest.php` | Print CSS aanwezig |
 
-- WCAG-axe-run via browser-test op de 12 kritieke schermen.
-- Backup-job dry-run tegen lokale storage adapter.
-- TLS-/HSTS-/redirect-checks via curl-script in CI tegen staging.
+### Integration Tests
 
-### Smoke tests
-
-- Migratie-smoke: alle migrations uit/in.
-- Documentatie-smoke: bestaan en linkcheck van de 9 documenten in Requirement 14-17.
-
-### Tellingen per testtype (richtlijn)
-
-| Testtype | Aantal |
+| Scenario | Test-bestand |
 |---|---|
-| Property tests | 17 (één per Property) |
-| Feature/integration tests | ~80 (CRUD + autorisatie + Livewire) |
-| Browser/WCAG smoke | 12 (één per scherm) |
-| Console-smoke | ~6 (per scheduler-command) |
-| Migratie-smoke | 1 |
+| Verlof-email bij goedkeuring | `tests/Feature/LeaveEmailNotificationTest.php` |
+| Verlof-herinnering scheduler | `tests/Feature/LeaveReminderSchedulerTest.php` |
+| ATW-validatie in modal | `tests/Feature/AtwModalValidationTest.php` |
+| Audit-trail bij copy-week | `tests/Feature/CopyWeekAuditTest.php` |
 
+### JavaScript Tests (Vitest)
+
+Voor de Alpine.js toast-manager en tijdlijn-berekeningen:
+
+| Test | Bestand |
+|---|---|
+| Toast queue management | `resources/js/__tests__/toastManager.test.js` |
+| Timeline position calculation | `resources/js/__tests__/timelinePosition.test.js` |
+| Keyboard shortcut handling | `resources/js/__tests__/keyboardShortcuts.test.js` |
+
+### Test-uitvoering
+
+```bash
+# PHP unit + feature tests
+php artisan test --parallel
+
+# JavaScript tests (indien Vitest geconfigureerd)
+npx vitest --run
+
+# Browser tests (Dusk, optioneel)
+php artisan dusk
+```
+
+### Coverage-doelen
+
+| Laag | Doel |
+|---|---|
+| Services (DashboardAggregation, LeaveBalance, CopyWeek) | ≥90% line coverage |
+| Livewire-componenten (mount, actions) | ≥80% line coverage |
+| UI-atoms (Blade components) | Snapshot tests voor elke variant |
+| Alpine.js modules | ≥85% line coverage |
