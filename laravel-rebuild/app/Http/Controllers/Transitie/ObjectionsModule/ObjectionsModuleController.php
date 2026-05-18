@@ -9,20 +9,16 @@ use Illuminate\Http\Request;
 
 class ObjectionsModuleController extends Controller
 {
-    public function __construct(private readonly ObjectionsService $objectionsService)
-    {
-    }
+    public function __construct(private readonly ObjectionsService $objectionsService) {}
 
     public function postInternalObjections(Request $request): JsonResponse
     {
-        if ((string) $request->user()->role === 'boekhouder') {
-            return response()->json([
-                'message' => 'Boekhouder heeft alleen read-only rapportage toegang.',
-            ], 403);
-        }
+        // Boekhouder read-only wordt afgedwongen door BookkeeperReadonly
+        // middleware (Req 3.3). Geen inline check nodig — de middleware
+        // retourneert 403 met code READ_ONLY_ROLE vóór deze controller.
 
         $validated = $request->validate([
-            'work_entry_id' => ['required', 'integer'],
+            'work_entry_id' => ['required', 'integer', 'min:1'],
             'motivation' => ['required', 'string', 'min:10', 'max:2000'],
         ]);
 
@@ -33,11 +29,8 @@ class ObjectionsModuleController extends Controller
 
     public function postInternalObjectionsIdReview(Request $request, int $id): JsonResponse
     {
-        if ((string) $request->user()->role === 'boekhouder') {
-            return response()->json([
-                'message' => 'Boekhouder heeft alleen read-only rapportage toegang.',
-            ], 403);
-        }
+        // Boekhouder read-only wordt afgedwongen door BookkeeperReadonly
+        // middleware (Req 3.3). Geen inline check nodig.
 
         $validated = $request->validate([
             'decision' => ['required', 'string', 'in:APPROVED,REJECTED'],
@@ -66,4 +59,3 @@ class ObjectionsModuleController extends Controller
         return response()->json(['data' => $objections, 'count' => count($objections)]);
     }
 }
-

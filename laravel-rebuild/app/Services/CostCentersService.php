@@ -6,6 +6,7 @@ use App\Models\CostCenter;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Service voor de kostenplaats-module van LaVita Urenregistratie.
@@ -45,8 +46,7 @@ class CostCentersService
 
     public function __construct(
         private readonly AuditService $auditService,
-    ) {
-    }
+    ) {}
 
     /**
      * Maak een nieuwe kostenplaats aan binnen de organisatie van de actor.
@@ -54,10 +54,10 @@ class CostCentersService
      * Vereiste rol: `owner` (Requirement 2.6).
      *
      * @param  array{code: string, name: string, description?: ?string, is_active?: bool}  $input
-     * @return array<string, mixed>  Genormaliseerde representatie van de kostenplaats.
+     * @return array<string, mixed> Genormaliseerde representatie van de kostenplaats.
      *
-     * @throws \Symfony\Component\HttpKernel\Exception\HttpException  403 met code `FORBIDDEN_ROLE` voor andere rollen.
-     * @throws ValidationException  422 wanneer `code` reeds bestaat binnen de organisatie.
+     * @throws HttpException 403 met code `FORBIDDEN_ROLE` voor andere rollen.
+     * @throws ValidationException 422 wanneer `code` reeds bestaat binnen de organisatie.
      */
     public function create(array $input, int $actorId): array
     {
@@ -100,8 +100,8 @@ class CostCentersService
      *
      * @param  array{code?: string, name?: string, description?: ?string, is_active?: bool}  $input
      *
-     * @throws \Symfony\Component\HttpKernel\Exception\HttpException  403 / 404
-     * @throws ValidationException  422 op duplicate code
+     * @throws HttpException 403 / 404
+     * @throws ValidationException 422 op duplicate code
      */
     public function update(int $costCenterId, array $input, int $actorId): array
     {
@@ -220,7 +220,7 @@ class CostCentersService
             $needle = '%'.strtolower(trim((string) $filters['search'])).'%';
             $query->where(function ($q) use ($needle) {
                 $q->whereRaw('LOWER(code) LIKE ?', [$needle])
-                  ->orWhereRaw('LOWER(name) LIKE ?', [$needle]);
+                    ->orWhereRaw('LOWER(name) LIKE ?', [$needle]);
             });
         }
 

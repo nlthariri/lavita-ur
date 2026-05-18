@@ -9,8 +9,11 @@ namespace App\Services;
 class TotpService
 {
     private const PERIOD = 30;
+
     private const DIGITS = 6;
+
     private const DRIFT_WINDOWS = [-1, 0, 1];
+
     private const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
     public function generateSecret(): string

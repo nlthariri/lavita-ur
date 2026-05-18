@@ -17,6 +17,15 @@ class WorkEntriesService
     private const ALLOWED_ROLES = ['owner', 'manager'];
 
     /**
+     * Work entry types die als verlof/ziekte/feestdag worden behandeld.
+     * Bij deze types is start_time/end_time optioneel (default 00:00/23:59)
+     * en wordt pause_minutes geforceerd naar 0.
+     *
+     * Requirements: 7.1, 7.2, 7.3
+     */
+    private const ABSENCE_TYPES = ['SICK', 'LEAVE', 'HOLIDAY'];
+
+    /**
      * ATW art. 5:4 — bij een aaneengesloten dienst van meer dan 5,5 uur
      * (`LONG_SHIFT_THRESHOLD_MINUTES = 330`) is minimaal 30 minuten pauze
      * verplicht. De waarde was tijdelijk 60 minuten in eerdere iteraties;
@@ -25,8 +34,11 @@ class WorkEntriesService
      * Requirements: 4.1
      */
     private const MIN_PAUSE_FOR_LONG_SHIFT_MINUTES = 30;
+
     private const LONG_SHIFT_THRESHOLD_MINUTES = 330;
+
     private const PAUSE_REQUIRED_CODE = 'ATW_PAUSE_REQUIRED';
+
     private const PAUSE_REQUIRED_MESSAGE = 'Bij meer dan 5,5 uur werken is minimaal 30 minuten pauze verplicht.';
 
     /**
@@ -54,13 +66,58 @@ class WorkEntriesService
         private readonly ProjectsService $projectsService,
         private readonly CostCentersService $costCentersService,
         private readonly AuditService $auditService,
-    ) {
-    }
+    ) {}
 
     public function create(array $input, int $registrarId): array
     {
         $registrar = User::findOrFail($registrarId);
-        $this->assertAllowedRegistrar($registrar);
+        $type = strtoupper((string) ($input['type'] ?? 'WORK'));
+        $isAbsence = in_array($type, self::ABSENCE_TYPES, true);
+
+        // Employees mogen SICK/LEAVE voor zichzelf registreren, maar niet HOLIDAY.
+        // Requirements: 7.1, 7.2
+        if ($registrar->role === 'employee') {
+            if (! $isAbsence) {
+                $this->assertAllowedRegistrar($registrar);
+            }
+            if ($type === 'HOLIDAY') {
+                throw new HttpResponseException(
+                    response()->json([
+                        'error' => 'Medewerkers mogen geen feestdagen registreren.',
+                        'code' => 'INVALID_TYPE_FOR_ROLE',
+                        'errors' => ['type' => ['Medewerkers mogen geen feestdagen registreren.']],
+                    ], 422)
+                );
+            }
+            // Employee mag alleen voor zichzelf (employee_id = zichzelf)
+            if ($isAbsence && isset($input['employee_id']) && (int) $input['employee_id'] !== (int) $registrar->id) {
+                $this->assertAllowedRegistrar($registrar);
+            }
+            // Bij SICK/LEAVE voor employee is note verplicht (Req 7.2)
+            if ($isAbsence && in_array($type, ['SICK', 'LEAVE'], true)) {
+                $note = isset($input['note']) ? trim((string) $input['note']) : '';
+                if ($note === '') {
+                    throw ValidationException::withMessages([
+                        'note' => 'Toelichting is verplicht bij ziekte of verlof.',
+                    ]);
+                }
+            }
+        } else {
+            $this->assertAllowedRegistrar($registrar);
+        }
+
+        // Bij absence-types: default start_time/end_time en forceer pause=0
+        // Requirements: 7.1
+        if ($isAbsence) {
+            $input['start_time'] = $input['start_time'] ?? '00:00';
+            $input['end_time'] = $input['end_time'] ?? '23:59';
+            $input['pause_minutes'] = 0;
+        }
+
+        // Voor employee die SICK/LEAVE registreert: employee_id = zichzelf
+        if ($registrar->role === 'employee' && $isAbsence) {
+            $input['employee_id'] = (int) $registrar->id;
+        }
 
         $employee = User::findOrFail($input['employee_id']);
         $this->assertSameOrganization($registrar, $employee);
@@ -172,8 +229,8 @@ class WorkEntriesService
                 'end_at' => $endAt,
                 'pause_minutes' => $pauseMinutes,
                 'net_minutes' => $netMinutes,
-                'type' => $input['type'] ?? 'WORK',
-                'note' => isset($input['note']) ? substr(trim($input['note']), 0, 500) : null,
+                'type' => strtoupper((string) ($input['type'] ?? 'WORK')),
+                'note' => isset($input['note']) ? strip_tags(substr(trim($input['note']), 0, 500)) : null,
                 'project_id' => $projectId,
                 'cost_center_id' => $costCenterId,
                 'is_finalized' => true,
@@ -221,19 +278,56 @@ class WorkEntriesService
      * Requirements: 1.4, 1.7, 1.8, 1.9
      *
      * @param  array<string, mixed>  $input
-     * @return array<string, mixed>  Canonieke API-representatie van de bijgewerkte werkregel.
+     * @return array<string, mixed> Canonieke API-representatie van de bijgewerkte werkregel.
      */
     public function update(int $id, array $input, int $registrarId): array
     {
         $registrar = User::findOrFail($registrarId);
-        $this->assertAllowedRegistrar($registrar);
 
         $entry = $this->findActiveEntry($id);
         $this->assertEntryInRegistrarOrg($registrar, $entry);
 
         $employee = User::findOrFail($entry->employee_id);
-        $this->assertTeamScope($registrar, $employee);
 
+        // Bepaal het effectieve type (input of bestaand).
+        $type = array_key_exists('type', $input)
+            ? strtoupper((string) $input['type'])
+            : strtoupper((string) $entry->type);
+        $isAbsence = in_array($type, self::ABSENCE_TYPES, true);
+
+        // Autorisatie: employee mag alleen SICK/LEAVE voor zichzelf updaten
+        // Requirements: 7.1, 7.2
+        if ($registrar->role === 'employee') {
+            if (! $isAbsence) {
+                $this->assertAllowedRegistrar($registrar);
+            }
+            if ($type === 'HOLIDAY') {
+                throw new HttpResponseException(
+                    response()->json([
+                        'error' => 'Medewerkers mogen geen feestdagen registreren.',
+                        'code' => 'INVALID_TYPE_FOR_ROLE',
+                        'errors' => ['type' => ['Medewerkers mogen geen feestdagen registreren.']],
+                    ], 422)
+                );
+            }
+            // Employee mag alleen eigen entries bewerken
+            if ((int) $entry->employee_id !== (int) $registrar->id) {
+                $this->assertAllowedRegistrar($registrar);
+            }
+            // Bij SICK/LEAVE voor employee is note verplicht (Req 7.2)
+            if ($isAbsence && in_array($type, ['SICK', 'LEAVE'], true)) {
+                $note = array_key_exists('note', $input) ? trim((string) ($input['note'] ?? '')) : trim((string) ($entry->note ?? ''));
+                if ($note === '') {
+                    throw ValidationException::withMessages([
+                        'note' => 'Toelichting is verplicht bij ziekte of verlof.',
+                    ]);
+                }
+            }
+        } else {
+            $this->assertAllowedRegistrar($registrar);
+        }
+
+        $this->assertTeamScope($registrar, $employee);
         $this->assertNoOpenObjection((int) $entry->id);
 
         // Effectieve waarden samenstellen: input wint, anders de bestaande
@@ -243,15 +337,23 @@ class WorkEntriesService
             ? Carbon::parse($input['entry_date'])->toDateString()
             : $entry->entry_date->toDateString();
 
-        $startTime = $input['start_time']
-            ?? $entry->start_at->copy()->setTimezone('Europe/Amsterdam')->format('H:i');
+        // Bij absence-types: default start_time/end_time en forceer pause=0
+        // Requirements: 7.1
+        if ($isAbsence) {
+            $startTime = $input['start_time'] ?? '00:00';
+            $endTime = $input['end_time'] ?? '23:59';
+            $pauseMinutes = 0;
+        } else {
+            $startTime = $input['start_time']
+                ?? $entry->start_at->copy()->setTimezone('Europe/Amsterdam')->format('H:i');
 
-        $endTime = $input['end_time']
-            ?? $entry->end_at->copy()->setTimezone('Europe/Amsterdam')->format('H:i');
+            $endTime = $input['end_time']
+                ?? $entry->end_at->copy()->setTimezone('Europe/Amsterdam')->format('H:i');
 
-        $pauseMinutes = array_key_exists('pause_minutes', $input)
-            ? (int) $input['pause_minutes']
-            : (int) $entry->pause_minutes;
+            $pauseMinutes = array_key_exists('pause_minutes', $input)
+                ? (int) $input['pause_minutes']
+                : (int) $entry->pause_minutes;
+        }
 
         $startAt = Carbon::createFromFormat(
             'Y-m-d H:i',
@@ -351,14 +453,10 @@ class WorkEntriesService
             );
         }
 
-        $type = array_key_exists('type', $input)
-            ? (string) $input['type']
-            : (string) $entry->type;
-
         $note = array_key_exists('note', $input)
             ? ($input['note'] === null
                 ? null
-                : substr(trim((string) $input['note']), 0, 500))
+                : strip_tags(substr(trim((string) $input['note']), 0, 500)))
             : $entry->note;
 
         $beforeSnapshot = $this->snapshotEntry($entry);
@@ -449,11 +547,8 @@ class WorkEntriesService
         $beforeSnapshot = $this->snapshotEntry($entry);
 
         DB::transaction(function () use ($entry, $registrar, $employee, $beforeSnapshot): void {
-            // De `deleted_at`-kolom werd toegevoegd in task 1.1 en is niet
-            // automatisch gevuld via Laravel's SoftDeletes-trait omdat het
-            // model bewust geen trait gebruikt; we zetten de waarde
-            // expliciet via forceFill().
-            $entry->forceFill(['deleted_at' => now()])->save();
+            // SoftDeletes trait zet `deleted_at` automatisch via `delete()`.
+            $entry->delete();
 
             $this->auditService->record([
                 'organization_id' => (int) $registrar->organization_id,
@@ -521,7 +616,7 @@ class WorkEntriesService
      *
      * Requirements: 1.1, 1.2, 1.3
      *
-     * @return array<string, mixed>  Canonieke API-representatie van de werkregel.
+     * @return array<string, mixed> Canonieke API-representatie van de werkregel.
      */
     public function find(int $id, int $requesterId): array
     {
@@ -576,26 +671,41 @@ class WorkEntriesService
     public function list(int $registrarId, array $filters = []): array
     {
         $registrar = User::findOrFail($registrarId);
-        $this->assertAllowedRegistrar($registrar);
+
+        // Employees mogen hun eigen werkregels opvragen (Req 1.1);
+        // owner/manager mogen bredere lijsten zien. Boekhouder mag
+        // alles binnen de organisatie lezen (read-only, Req 3.3).
+        if (! in_array($registrar->role, ['owner', 'manager', 'employee', 'boekhouder'], true)) {
+            $this->assertAllowedRegistrar($registrar);
+        }
 
         $query = WorkEntry::where('organization_id', $registrar->organization_id)
-            ->whereNull('deleted_at')
             ->orderBy('entry_date', 'desc')
             ->orderBy('start_at', 'desc');
 
-        if ($registrar->role === 'manager' && $registrar->team_id) {
-            $query->where('team_id', $registrar->team_id);
+        // Scope-beperkingen per rol:
+        // - manager: alleen eigen team (ALTIJD scopen, ook als team_id null)
+        // - employee: alleen eigen werkregels
+        if ($registrar->role === 'manager') {
+            if ($registrar->team_id) {
+                $query->where('team_id', $registrar->team_id);
+            } else {
+                // Manager zonder team ziet NIETS (niet alles)
+                $query->where('team_id', -1);
+            }
+        } elseif ($registrar->role === 'employee') {
+            $query->where('employee_id', $registrar->id);
         }
 
-        if (!empty($filters['employee_id'])) {
+        if (! empty($filters['employee_id'])) {
             $query->where('employee_id', (int) $filters['employee_id']);
         }
 
-        if (!empty($filters['from'])) {
+        if (! empty($filters['from'])) {
             $query->whereDate('entry_date', '>=', $filters['from']);
         }
 
-        if (!empty($filters['to'])) {
+        if (! empty($filters['to'])) {
             $query->whereDate('entry_date', '<=', $filters['to']);
         }
 
@@ -671,19 +781,18 @@ class WorkEntriesService
     }
 
     /**
-     * Vind een werkregel die nog niet soft-deleted is. Een verwijderde of
-     * niet-bestaande werkregel resulteert in een 404 via Laravel's standaard
+     * Vind een werkregel die nog niet soft-deleted is. Met de SoftDeletes
+     * trait filtert Eloquent automatisch op `deleted_at IS NULL`, dus we
+     * hoeven alleen `find()` te gebruiken. Een verwijderde of niet-bestaande
+     * werkregel resulteert in een 404 via Laravel's standaard
      * `ModelNotFoundException`-handler.
      */
     private function findActiveEntry(int $id): WorkEntry
     {
-        $entry = WorkEntry::query()
-            ->whereNull('deleted_at')
-            ->where('id', $id)
-            ->first();
+        $entry = WorkEntry::find($id);
 
         if ($entry === null) {
-            throw (new ModelNotFoundException())->setModel(WorkEntry::class, [$id]);
+            throw (new ModelNotFoundException)->setModel(WorkEntry::class, [$id]);
         }
 
         return $entry;
@@ -697,7 +806,7 @@ class WorkEntriesService
     private function assertEntryInRegistrarOrg(User $registrar, WorkEntry $entry): void
     {
         if ((int) $registrar->organization_id !== (int) $entry->organization_id) {
-            throw (new ModelNotFoundException())->setModel(WorkEntry::class, [$entry->id]);
+            throw (new ModelNotFoundException)->setModel(WorkEntry::class, [$entry->id]);
         }
     }
 
@@ -788,7 +897,7 @@ class WorkEntriesService
 
     private function assertAllowedRegistrar(User $registrar): void
     {
-        if (!in_array($registrar->role, self::ALLOWED_ROLES, true)) {
+        if (! in_array($registrar->role, self::ALLOWED_ROLES, true)) {
             throw ValidationException::withMessages([
                 'registrar' => 'Alleen eigenaar of manager mag uren registreren.',
             ]);
@@ -810,7 +919,7 @@ class WorkEntriesService
             return;
         }
 
-        if (!$registrar->team_id) {
+        if (! $registrar->team_id) {
             throw ValidationException::withMessages([
                 'registrar' => 'Manager moet gekoppeld zijn aan een team.',
             ]);

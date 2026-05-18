@@ -15,11 +15,17 @@ class WorkEntriesModuleContractTest extends TestCase
     use RefreshDatabase;
 
     private Organization $org;
+
     private Team $team;
+
     private User $owner;
+
     private User $manager;
+
     private User $employee;
+
     private User $boekhouder;
+
     private string $token;
 
     protected function setUp(): void
@@ -446,9 +452,9 @@ class WorkEntriesModuleContractTest extends TestCase
 
     public function test_cross_org_work_entry_blocked_for_manager(): void
     {
-        $orgB = \App\Models\Organization::create(['name' => 'Org B']);
-        $teamB = \App\Models\Team::create(['organization_id' => $orgB->id, 'name' => 'Team B']);
-        $employeeB = \App\Models\User::create([
+        $orgB = Organization::create(['name' => 'Org B']);
+        $teamB = Team::create(['organization_id' => $orgB->id, 'name' => 'Team B']);
+        $employeeB = User::create([
             'name' => 'Emp B', 'email' => 'emp-b@test.nl', 'password' => bcrypt('x'),
             'organization_id' => $orgB->id, 'team_id' => $teamB->id,
             'role' => 'employee', 'is_active' => true,
@@ -469,13 +475,13 @@ class WorkEntriesModuleContractTest extends TestCase
 
     public function test_cross_org_owner_cannot_see_foreign_work_entries(): void
     {
-        $orgB = \App\Models\Organization::create(['name' => 'Org B']);
-        $teamB = \App\Models\Team::create(['organization_id' => $orgB->id, 'name' => 'Team B']);
-        $ownerB = \App\Models\User::create([
+        $orgB = Organization::create(['name' => 'Org B']);
+        $teamB = Team::create(['organization_id' => $orgB->id, 'name' => 'Team B']);
+        $ownerB = User::create([
             'name' => 'Owner B', 'email' => 'owner-b@test.nl', 'password' => bcrypt('x'),
             'organization_id' => $orgB->id, 'role' => 'owner', 'is_active' => true,
         ]);
-        $empB = \App\Models\User::create([
+        $empB = User::create([
             'name' => 'EmpB', 'email' => 'empl-b@test.nl', 'password' => bcrypt('x'),
             'organization_id' => $orgB->id, 'team_id' => $teamB->id,
             'role' => 'employee', 'is_active' => true,

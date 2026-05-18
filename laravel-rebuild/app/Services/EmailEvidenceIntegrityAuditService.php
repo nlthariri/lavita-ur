@@ -46,7 +46,7 @@ class EmailEvidenceIntegrityAuditService
                 foreach ($items as $item) {
                     $scanned++;
                     $isValid = $emailOutboxService->verifyEventChainForOutbox((int) $item->id);
-                    if (!$isValid) {
+                    if (! $isValid) {
                         $tamperedOutboxIds[] = (int) $item->id;
                     }
                 }
@@ -220,7 +220,7 @@ class EmailEvidenceIntegrityAuditService
             $status = (string) ($delivery['status'] ?? 'unknown');
             $acknowledged = (bool) ($delivery['acknowledged'] ?? false);
             $isOpen = in_array($status, ['not_configured', 'http_error', 'send_failed', 'unknown'], true)
-                || ($status === 'sent' && !$acknowledged);
+                || ($status === 'sent' && ! $acknowledged);
 
             if ($isOpen) {
                 $open[] = [

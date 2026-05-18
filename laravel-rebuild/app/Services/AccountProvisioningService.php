@@ -6,12 +6,14 @@ use App\Models\Organization;
 use App\Models\Team;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class AccountProvisioningService
 {
     private const ALLOWED_CREATOR_ROLES = ['owner', 'manager'];
+
     private const ALLOWED_TARGET_ROLES = ['manager', 'employee', 'boekhouder'];
 
     /**
@@ -25,33 +27,32 @@ class AccountProvisioningService
         private readonly EmailOutboxService $emailOutboxService,
         private readonly EmailTemplateService $emailTemplateService,
         private readonly PasswordResetService $passwordResetService,
-    ) {
-    }
+    ) {}
 
     public function create(array $input, int $creatorId): array
     {
         $creator = User::findOrFail($creatorId);
 
-        if (!$creator->is_active) {
+        if (! $creator->is_active) {
             throw ValidationException::withMessages([
                 'creator' => 'Inactieve gebruiker mag geen accounts aanmaken.',
             ]);
         }
 
-        if (!$creator->organization_id) {
+        if (! $creator->organization_id) {
             throw ValidationException::withMessages([
                 'creator' => 'Alleen gebruikers met een geldige organisatie mogen accounts aanmaken.',
             ]);
         }
 
-        if (!in_array((string) $creator->role, self::ALLOWED_CREATOR_ROLES, true)) {
+        if (! in_array((string) $creator->role, self::ALLOWED_CREATOR_ROLES, true)) {
             throw ValidationException::withMessages([
                 'creator' => 'Alleen eigenaar of manager kan accounts aanmaken.',
             ]);
         }
 
         $targetRole = (string) ($input['role'] ?? 'employee');
-        if (!in_array($targetRole, self::ALLOWED_TARGET_ROLES, true)) {
+        if (! in_array($targetRole, self::ALLOWED_TARGET_ROLES, true)) {
             throw ValidationException::withMessages([
                 'role' => 'Ongeldige rol voor account-aanmaak.',
             ]);
@@ -66,7 +67,7 @@ class AccountProvisioningService
                 ]);
             }
 
-            if (!$creator->team_id) {
+            if (! $creator->team_id) {
                 throw ValidationException::withMessages([
                     'creator' => 'Manager moet aan een team gekoppeld zijn.',
                 ]);
@@ -77,7 +78,7 @@ class AccountProvisioningService
                 ->where('organization_id', (int) $creator->organization_id)
                 ->exists();
 
-            if (!$managerTeamExists) {
+            if (! $managerTeamExists) {
                 throw ValidationException::withMessages([
                     'creator' => 'Manager-team is ongeldig voor deze organisatie.',
                 ]);
@@ -96,7 +97,7 @@ class AccountProvisioningService
                 ->where('organization_id', (int) $creator->organization_id)
                 ->first();
 
-            if (!$team) {
+            if (! $team) {
                 throw ValidationException::withMessages([
                     'team_id' => 'Team hoort niet bij de organisatie van de account-aanmaker.',
                 ]);
@@ -112,8 +113,8 @@ class AccountProvisioningService
                     // Random initieel wachtwoord — wordt nooit naar de
                     // gebruiker gestuurd, alleen overschreven via de
                     // wachtwoord-reset-link uit de welkomstmail
-                    // (Requirement 5.5).
-                    'password' => Str::random(40),
+                    // (Requirement 5.5). MOET gehasht worden opgeslagen.
+                    'password' => Hash::make(Str::random(40)),
                     'organization_id' => (int) $creator->organization_id,
                     'team_id' => $teamId,
                     'role' => $targetRole,

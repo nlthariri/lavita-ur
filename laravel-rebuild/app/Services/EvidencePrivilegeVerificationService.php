@@ -92,7 +92,7 @@ class EvidencePrivilegeVerificationService
 
             $tableResults[] = $tableResult;
 
-            if (!$tableResult['can_select'] || !$tableResult['can_insert'] || $tableResult['can_update'] || $tableResult['can_delete'] || $tableResult['can_truncate']) {
+            if (! $tableResult['can_select'] || ! $tableResult['can_insert'] || $tableResult['can_update'] || $tableResult['can_delete'] || $tableResult['can_truncate']) {
                 $violations[] = [
                     'table' => $table,
                     'expected' => 'SELECT/INSERT only',
@@ -158,7 +158,7 @@ class EvidencePrivilegeVerificationService
 
             $tableResults[] = $tableResult;
 
-            if (!$hasSelect || !$hasInsert || $hasUpdate || $hasDelete || $hasTrigger || $hasAlter || $hasDrop) {
+            if (! $hasSelect || ! $hasInsert || $hasUpdate || $hasDelete || $hasTrigger || $hasAlter || $hasDrop) {
                 $violations[] = [
                     'table' => $table,
                     'expected' => 'SELECT/INSERT only, no UPDATE/DELETE/TRIGGER/ALTER/DROP',

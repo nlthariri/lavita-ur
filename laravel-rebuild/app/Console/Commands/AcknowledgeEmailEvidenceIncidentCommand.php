@@ -16,7 +16,7 @@ class AcknowledgeEmailEvidenceIncidentCommand extends Command
         $incidentId = (string) $this->argument('incident-id');
         $note = (string) ($this->option('note') ?? '');
 
-        if (!$service->acknowledgeIncident($incidentId, $note)) {
+        if (! $service->acknowledgeIncident($incidentId, $note)) {
             $this->error('Incident niet gevonden: '.$incidentId);
 
             return self::FAILURE;

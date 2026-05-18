@@ -12,15 +12,17 @@ use Illuminate\Validation\ValidationException;
 class ObjectionsService
 {
     private const ALLOWED_REVIEW_ROLES = ['owner', 'manager'];
+
     private const STATUS_OPEN = 'OPEN';
+
     private const STATUS_APPROVED = 'APPROVED';
+
     private const STATUS_REJECTED = 'REJECTED';
 
     public function __construct(
         private readonly EmailOutboxService $emailOutboxService,
         private readonly AuditService $auditService,
-    ) {
-    }
+    ) {}
 
     public function submit(array $input, int $submitterId): array
     {
@@ -46,41 +48,48 @@ class ObjectionsService
             ]);
         }
 
-        $existing = Objection::where('work_entry_id', $entry->id)
-            ->where('status', self::STATUS_OPEN)
-            ->exists();
+        // Wrap in transactie om race condition te voorkomen: twee
+        // gelijktijdige submits zouden anders beide de $existing-check
+        // passeren en dan op de unique constraint crashen.
+        return DB::transaction(function () use ($input, $submitter, $entry): array {
+            $existing = Objection::where('work_entry_id', $entry->id)
+                ->where('status', self::STATUS_OPEN)
+                ->lockForUpdate()
+                ->exists();
 
-        if ($existing) {
-            throw ValidationException::withMessages([
-                'work_entry_id' => 'Er is al een openstaand bezwaar voor deze werkregel.',
+            if ($existing) {
+                throw ValidationException::withMessages([
+                    'work_entry_id' => 'Er is al een openstaand bezwaar voor deze werkregel.',
+                ]);
+            }
+
+            $objection = Objection::create([
+                'organization_id' => $submitter->organization_id,
+                'work_entry_id' => $entry->id,
+                'submitted_by_id' => $submitter->id,
+                'motivation' => substr(trim($input['motivation']), 0, 2000),
+                'status' => self::STATUS_OPEN,
+                'submitted_at' => now(),
             ]);
-        }
 
-        $objection = Objection::create([
-            'organization_id' => $submitter->organization_id,
-            'work_entry_id' => $entry->id,
-            'submitted_by_id' => $submitter->id,
-            'motivation' => substr(trim($input['motivation']), 0, 2000),
-            'status' => self::STATUS_OPEN,
-        ]);
+            $this->notifyReviewersOfSubmittedObjection($objection, $entry, $submitter);
 
-        $this->notifyReviewersOfSubmittedObjection($objection, $entry, $submitter);
-
-        return $this->toArray($objection);
+            return $this->toArray($objection);
+        });
     }
 
     public function review(int $objectionId, array $input, int $reviewerId): array
     {
         $reviewer = User::findOrFail($reviewerId);
 
-        if (!in_array($reviewer->role, self::ALLOWED_REVIEW_ROLES, true)) {
+        if (! in_array($reviewer->role, self::ALLOWED_REVIEW_ROLES, true)) {
             throw ValidationException::withMessages([
                 'reviewer' => 'Alleen eigenaar of manager mag bezwaren beoordelen.',
             ]);
         }
 
         $decision = $input['decision'];
-        if (!in_array($decision, [self::STATUS_APPROVED, self::STATUS_REJECTED], true)) {
+        if (! in_array($decision, [self::STATUS_APPROVED, self::STATUS_REJECTED], true)) {
             throw ValidationException::withMessages([
                 'decision' => 'Beslissing moet APPROVED of REJECTED zijn.',
             ]);
@@ -94,6 +103,13 @@ class ObjectionsService
 
         if ($decision === self::STATUS_APPROVED) {
             $this->assertCorrectionInput($input);
+
+            // Valideer corrected_pause_minutes is niet negatief
+            if (isset($input['corrected_pause_minutes']) && (int) $input['corrected_pause_minutes'] < 0) {
+                throw ValidationException::withMessages([
+                    'corrected_pause_minutes' => 'Gecorrigeerde pauze mag niet negatief zijn.',
+                ]);
+            }
         }
 
         return DB::transaction(function () use ($objectionId, $input, $reviewer, $decision): array {
@@ -104,6 +120,17 @@ class ObjectionsService
                 throw ValidationException::withMessages([
                     'objection' => 'Bezwaar behoort niet tot uw organisatie.',
                 ]);
+            }
+
+            // Team-scope voor managers: mag alleen bezwaren beoordelen
+            // op werkregels van het eigen team (enterprise-hardening).
+            if ($reviewer->role === 'manager') {
+                $workEntry = WorkEntry::find($objection->work_entry_id);
+                if ($workEntry && $reviewer->team_id && (int) $workEntry->team_id !== (int) $reviewer->team_id) {
+                    throw ValidationException::withMessages([
+                        'objection' => 'Manager mag alleen bezwaren van het eigen team beoordelen.',
+                    ]);
+                }
             }
 
             if ($objection->status !== self::STATUS_OPEN) {
@@ -179,6 +206,22 @@ class ObjectionsService
                 ]);
             }
 
+            if ($decision === self::STATUS_REJECTED) {
+                $this->auditService->record([
+                    'organization_id' => $reviewer->organization_id,
+                    'actor_id' => $reviewer->id,
+                    'action' => 'objection_rejected',
+                    'target_type' => 'objection',
+                    'target_id' => (string) $objection->id,
+                    'before_data' => ['status' => self::STATUS_OPEN],
+                    'after_data' => [
+                        'status' => self::STATUS_REJECTED,
+                        'manager_response' => $objection->manager_response,
+                        'work_entry_id' => (int) $objection->work_entry_id,
+                    ],
+                ]);
+            }
+
             $this->notifySubmitterOfReviewOutcome($objection, $reviewer, $decision);
 
             return $this->toArray($objection->fresh());
@@ -198,7 +241,7 @@ class ObjectionsService
             $query->whereHas('workEntry', fn ($q) => $q->where('team_id', $user->team_id));
         }
 
-        if (!empty($filters['status'])) {
+        if (! empty($filters['status'])) {
             $query->where('status', strtoupper($filters['status']));
         }
 
@@ -229,12 +272,12 @@ class ObjectionsService
     {
         $missing = [];
         foreach (['corrected_start_time', 'corrected_end_time', 'corrected_pause_minutes'] as $key) {
-            if (!array_key_exists($key, $input)) {
+            if (! array_key_exists($key, $input)) {
                 $missing[] = $key;
             }
         }
 
-        if (!empty($missing)) {
+        if (! empty($missing)) {
             throw ValidationException::withMessages([
                 'correction' => 'Bij goedkeuring zijn corrected_start_time, corrected_end_time en corrected_pause_minutes verplicht.',
             ]);
@@ -258,6 +301,9 @@ class ObjectionsService
             })
             ->get();
 
+        $safeName = e($submitter->name);
+        $safeEntryId = (int) $entry->id;
+
         foreach ($recipients as $recipient) {
             $this->emailOutboxService->dispatch([
                 'idempotency_key' => 'objection-submitted-'.$objection->id.'-'.$recipient->id,
@@ -266,7 +312,7 @@ class ObjectionsService
                 'recipient' => (string) $recipient->email,
                 'subject' => 'Nieuw bezwaar ingediend',
                 'body_text' => 'Er is een nieuw bezwaar ingediend voor werkregel #'.$entry->id.' door '.$submitter->name.'.',
-                'body_html' => '<p>Er is een nieuw bezwaar ingediend voor werkregel <strong>#'.$entry->id.'</strong> door <strong>'.$submitter->name.'</strong>.</p>',
+                'body_html' => '<p>Er is een nieuw bezwaar ingediend voor werkregel <strong>#'.$entry->id.'</strong> door <strong>'.$safeName.'</strong>.</p>',
                 'type' => 'objection_submitted',
             ], [
                 'actor_id' => (int) $submitter->id,
@@ -278,12 +324,14 @@ class ObjectionsService
     private function notifySubmitterOfReviewOutcome(Objection $objection, User $reviewer, string $decision): void
     {
         $submitter = User::query()->find($objection->submitted_by_id);
-        if (!$submitter || !$submitter->is_active) {
+        if (! $submitter || ! $submitter->is_active) {
             return;
         }
 
         $response = $objection->manager_response ? (' Toelichting: '.$objection->manager_response) : '';
         $statusLabel = $decision === self::STATUS_APPROVED ? 'goedgekeurd' : 'afgewezen';
+        $safeReviewerName = e($reviewer->name);
+        $safeResponse = e($response);
 
         $this->emailOutboxService->dispatch([
             'idempotency_key' => 'objection-reviewed-'.$objection->id,
@@ -292,7 +340,7 @@ class ObjectionsService
             'recipient' => (string) $submitter->email,
             'subject' => 'Uitkomst bezwaar: '.$statusLabel,
             'body_text' => 'Uw bezwaar voor werkregel #'.$objection->work_entry_id.' is '.$statusLabel.' door '.$reviewer->name.'.'.$response,
-            'body_html' => '<p>Uw bezwaar voor werkregel <strong>#'.$objection->work_entry_id.'</strong> is <strong>'.$statusLabel.'</strong> door <strong>'.$reviewer->name.'</strong>.</p><p>'.$response.'</p>',
+            'body_html' => '<p>Uw bezwaar voor werkregel <strong>#'.$objection->work_entry_id.'</strong> is <strong>'.$statusLabel.'</strong> door <strong>'.$safeReviewerName.'</strong>.</p><p>'.$safeResponse.'</p>',
             'type' => 'objection_reviewed',
         ], [
             'actor_id' => (int) $reviewer->id,

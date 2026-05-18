@@ -6,6 +6,7 @@ use App\Models\AuthSession;
 use App\Models\MfaRecoveryCode;
 use App\Models\MfaSecret;
 use App\Models\User;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -14,21 +15,45 @@ use Illuminate\Validation\ValidationException;
 
 class AuthMfaService
 {
-    public function __construct(private readonly TotpService $totpService)
-    {
-    }
+    public function __construct(
+        private readonly TotpService $totpService,
+        private readonly AuditService $auditService,
+    ) {}
 
     public function login(string $email, string $password, ?string $ipAddress, ?string $userAgent): array
     {
-        $user = User::query()->where('email', strtolower(trim($email)))->first();
+        $user = User::query()->where('email_index_hash', hash('sha256', strtolower(trim($email))))->first();
 
-        if (!$user || !Hash::check($password, $user->password)) {
+        if (! $user || ! Hash::check($password, $user->password)) {
+            // Audit: mislukte login-poging (alleen als user bestaat)
+            if ($user) {
+                $this->auditService->record([
+                    'organization_id' => $user->organization_id ?? 0,
+                    'actor_id' => $user->id,
+                    'action' => 'LOGIN_FAILED',
+                    'target_type' => 'user',
+                    'target_id' => (string) $user->id,
+                    'before_data' => ['reason' => 'invalid_credentials'],
+                    'after_data' => null,
+                ]);
+            }
+
             throw ValidationException::withMessages([
                 'email' => 'Ongeldige inloggegevens.',
             ]);
         }
 
-        if (!$user->is_active) {
+        if (! $user->is_active) {
+            $this->auditService->record([
+                'organization_id' => $user->organization_id ?? 0,
+                'actor_id' => $user->id,
+                'action' => 'LOGIN_FAILED',
+                'target_type' => 'user',
+                'target_id' => (string) $user->id,
+                'before_data' => ['reason' => 'account_deactivated'],
+                'after_data' => null,
+            ]);
+
             throw ValidationException::withMessages([
                 'email' => 'Account is gedeactiveerd.',
             ]);
@@ -49,6 +74,17 @@ class AuthMfaService
             ]);
         });
 
+        // Audit: succesvolle login
+        $this->auditService->record([
+            'organization_id' => $user->organization_id ?? 0,
+            'actor_id' => $user->id,
+            'action' => 'LOGIN_SUCCESS',
+            'target_type' => 'user',
+            'target_id' => (string) $user->id,
+            'before_data' => null,
+            'after_data' => ['mfa_required' => in_array((string) $user->role, ['owner', 'manager'], true)],
+        ]);
+
         $mfaSecret = MfaSecret::query()->where('user_id', $user->id)->first();
         $mfaVerified = $mfaSecret && $mfaSecret->verified_at !== null && $mfaSecret->disabled_at === null;
         $mfaRequiredRole = in_array((string) $user->role, ['owner', 'manager'], true);
@@ -57,7 +93,7 @@ class AuthMfaService
             'user_id' => $user->id,
             'session_token' => $token,
             'expires_at' => $expiresAt->toISOString(),
-            'mfa_required' => $mfaRequiredRole && !$mfaVerified,
+            'mfa_required' => $mfaRequiredRole && ! $mfaVerified,
         ];
     }
 
@@ -80,13 +116,13 @@ class AuthMfaService
     public function setupMfa(int $userId, string $passwordConfirmation): array
     {
         $user = User::query()->find($userId);
-        if (!$user) {
+        if (! $user) {
             throw ValidationException::withMessages([
                 'user_id' => 'Gebruiker niet gevonden.',
             ]);
         }
 
-        if (!Hash::check($passwordConfirmation, $user->password)) {
+        if (! Hash::check($passwordConfirmation, $user->password)) {
             throw ValidationException::withMessages([
                 'password_confirmation' => 'Wachtwoordbevestiging ongeldig.',
             ]);
@@ -153,7 +189,7 @@ class AuthMfaService
             ->whereNull('disabled_at')
             ->first();
 
-        if (!$secretRecord) {
+        if (! $secretRecord) {
             throw ValidationException::withMessages([
                 'user_id' => 'MFA is niet geconfigureerd voor deze gebruiker.',
             ]);
@@ -163,11 +199,22 @@ class AuthMfaService
 
         // Probeer TOTP-verificatie (precies 6 cijfers)
         if (strlen($code) === 6 && ctype_digit($code)) {
-            if (!$this->totpService->verify($secret, $code)) {
+            // TOTP replay-bescherming: voorkom hergebruik van dezelfde code
+            // binnen het 90-seconden drift-venster (D-05 fix).
+            $replayCacheKey = "totp_used:{$userId}:{$code}";
+            if (Cache::has($replayCacheKey)) {
                 return false;
             }
 
+            if (! $this->totpService->verify($secret, $code)) {
+                return false;
+            }
+
+            // Markeer code als gebruikt voor 90 seconden (3 vensters × 30s)
+            Cache::put($replayCacheKey, true, 90);
+
             $secretRecord->update(['verified_at' => now()]);
+
             return true;
         }
 
@@ -178,7 +225,7 @@ class AuthMfaService
             ->get()
             ->first(fn ($rc) => Hash::check($code, $rc->code_hash));
 
-        if (!$recoveryCode) {
+        if (! $recoveryCode) {
             return false;
         }
 
@@ -199,12 +246,13 @@ class AuthMfaService
             // 10 willekeurige uppercase alfanumerieke tekens (bijv. A3B7C2D1E9)
             $codes[] = strtoupper(Str::random(10));
         }
+
         return $codes;
     }
 
     public function codeForTesting(string $provisioningSecret, ?int $timestamp = null): string
     {
-        if (!app()->environment('testing')) {
+        if (! app()->environment('testing')) {
             throw new \RuntimeException('codeForTesting is alleen toegestaan in test-omgeving.');
         }
 

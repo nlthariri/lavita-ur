@@ -14,8 +14,7 @@ class EmailFlowsModuleController extends Controller
     public function __construct(
         private readonly EmailOutboxService $emailOutboxService,
         private readonly EmailTemplateService $emailTemplateService,
-    ) {
-    }
+    ) {}
 
     public function postInternalEmailDispatch(Request $request): JsonResponse
     {
@@ -33,7 +32,7 @@ class EmailFlowsModuleController extends Controller
         ]);
 
         $actor = $request->user();
-        if (!in_array($actor->role, ['owner', 'manager'], true)) {
+        if (! in_array($actor->role, ['owner', 'manager'], true)) {
             return response()->json([
                 'message' => 'Onvoldoende rechten voor e-mail dispatch.',
             ], 403);
@@ -67,7 +66,7 @@ class EmailFlowsModuleController extends Controller
     public function putInternalEmailTemplate(Request $request, string $type): JsonResponse
     {
         $actor = $request->user();
-        if (!in_array($actor->role, ['owner', 'manager'], true)) {
+        if (! in_array($actor->role, ['owner', 'manager'], true)) {
             return response()->json([
                 'message' => 'Onvoldoende rechten voor e-mailtemplates.',
             ], 403);
@@ -103,7 +102,7 @@ class EmailFlowsModuleController extends Controller
     public function getInternalEmailTemplate(Request $request, string $type): JsonResponse
     {
         $actor = $request->user();
-        if (!in_array($actor->role, ['owner', 'manager'], true)) {
+        if (! in_array($actor->role, ['owner', 'manager'], true)) {
             return response()->json([
                 'message' => 'Onvoldoende rechten voor e-mailtemplates.',
             ], 403);
@@ -111,7 +110,7 @@ class EmailFlowsModuleController extends Controller
 
         $template = $this->emailTemplateService->findTemplate((int) $actor->organization_id, $type);
 
-        if (!$template) {
+        if (! $template) {
             return response()->json([
                 'message' => 'Template niet gevonden.',
             ], 404);
@@ -135,7 +134,7 @@ class EmailFlowsModuleController extends Controller
         ]);
 
         $actor = $request->user();
-        if (!in_array($actor->role, ['owner', 'manager'], true)) {
+        if (! in_array($actor->role, ['owner', 'manager'], true)) {
             return response()->json([
                 'message' => 'Onvoldoende rechten voor maandrapportage.',
             ], 403);
@@ -170,4 +169,3 @@ class EmailFlowsModuleController extends Controller
         return response()->json($result, 202);
     }
 }
-

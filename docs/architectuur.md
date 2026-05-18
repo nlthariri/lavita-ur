@@ -2,60 +2,85 @@
 
 ## Scopebasis
 
-Bron van waarheid: opdrachtspecificatie v1.1.
+Bron van waarheid: opdrachtspecificatie v1.1 + Laravel-herbouw (mei 2026).
 
 ## Gemaakte aannames
 
-- Hostingdoel is Cloud86 met Node.js-runtime (VPS of managed container), omdat alleen FTP niet voldoet voor server-side Next.js.
+- Hostingdoel is Cloud86 met PHP 8.3-runtime (VPS met Plesk).
 - Productiedomein draait op subdomein van het bedrijfsdomein, bijvoorbeeld `uren.jouwdomein.nl`.
 - Schaaldoel is klein tot middelgroot: 3 naar 10 medewerkers in 3 jaar. Daarom is single-region EER met verticale schaal en eenvoudige horizontale optie passend.
-- Geen publieke REST API in v1; interne route handlers worden gebruikt voor frontend-backendverkeer.
+- Geen publieke REST API in v1; interne API-routes worden gebruikt voor frontend-backendverkeer via bearer-token authenticatie.
 
 ## Laag 1: Architectuur
 
-- Applicatie: Next.js App Router met TypeScript.
-- Datalaag: MySQL + Prisma (beheerbaar via Cloud86/phpMyAdmin).
+- Applicatie: Laravel 13 met PHP 8.3, Livewire 3 (full-page components).
+- Frontend: Tailwind CSS 3.4, Vite 8, Inter/Geist fonts.
+- Datalaag: MySQL 8 (productie), SQLite (tests).
 - Domeinmodules:
-  - ureninvoer en netto-minutenberekening
-  - ATW-signalen (dag/week/16-weken/rust)
-  - bezwaarproces
-  - e-mailtemplates en e-mailevents
+  - Ureninvoer en netto-minutenberekening
+  - ATW-signalen (dag/week/16-weken/rust/pauze)
+  - Bezwaarproces (OPEN → ACCEPTED/REJECTED)
+  - E-mailtemplates en outbox-pattern
+  - Projecten en kostenplaatsen
+  - Verlof/ziekte/feestdagen (SICK/LEAVE/HOLIDAY)
+  - Rapportages (PDF/Excel/jaaroverzicht)
+  - AVG-retentie en pseudonimisering
 
 ## Laag 2: Backend
 
 Aanwezig:
-- Prisma schema met rollen, teams, projecten, uren, bezwaren, ATW-schendingen en e-mailtabellen.
-- Inputvalidatie met Zod voor urenregistratie.
-- Service voor directe vaststelling van uren en opslag van ATW-signalen.
-- Interne API endpoint voor werkentry creatie.
+- Service-laag met strikte scheiding (WorkEntriesService, AtwService, AuthMfaService, etc.)
+- Custom bearer-token authenticatie met SHA-256 hashing
+- TOTP MFA (RFC 6238) met recovery codes
+- Email outbox pattern met idempotency, exponential backoff, event chain hashing
+- ATW-engine met alle wettelijke controles (dag/week/16-weken/rust/pauze)
+- Audit trail voor alle mutaties
+- Retentie-service met pseudonimisering (AVG)
+- Account provisioning met welkomstmail
 
 ## Laag 3: Frontend
 
 Aanwezig:
-- Basislandingsscherm in Nederlands.
-- Design tokens volgens Cal.com-stijl uit de spec.
-
-Nog te bouwen:
-- Inlog + MFA flow.
-- Weekoverzicht, invoermodal, medewerker-urenstaat, bezwaarbeoordeling.
-- ATW-dashboard, e-mailbeheer, rapportagescherm.
+- Inlog + MFA flow (LoginForm, MfaVerifyForm, MfaSetupQr)
+- Wachtwoord vergeten/reset flow
+- Dashboard (ManagerHome)
+- Weekoverzicht en mijn-week
+- Verlofregistratie
+- Bezwaarbeoordeling
+- ATW-statusdashboard
+- Rapportages met filters en jaaroverzicht
+- Accountbeheer
+- E-mailtemplate-instellingen
 
 ## Laag 4: Security en compliance
 
 Aanwezig:
-- Rolrestrictie op server voor urenregistratie (alleen owner/manager).
-- Teamrestrictie voor manager.
-- Data- en modelstructuur voorbereid op 7-jaarsretentie en ATW-incidentregistratie.
-
-Nog te bouwen:
-- Volledige MFA-setupflow in UI met beleidsafdwinging voor owner/manager.
-- Wachtwoordbeleid conform NCSC.
-- Geautomatiseerde retentie/pseudonimiseringsjobs.
-- Juridische documentset (VWO, datalekprocedure, DPIA-onderdelen).
+- Fail-closed rate limiting (FailClosedThrottle)
+- HSTS met preload, includeSubDomains
+- Nonce-based CSP (Content Security Policy)
+- Security headers (X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy)
+- HTTPS redirect in productie (308 Permanent Redirect)
+- Encrypted PII (email, full_name, phone) met email_index_hash voor lookups
+- TOTP replay-bescherming via cache
+- Timing-safe wachtwoord-reset (geen user enumeration)
+- Session hijacking detectie (/8 hard block, /16 soft warning)
+- MFA rotatie-policy (180 dagen)
+- Append-only DB triggers voor evidence-tabellen
+- Bookkeeper read-only enforcement
+- Wachtwoordbeleid conform NCSC (12+ tekens, mix hoofd/klein/cijfer/symbool)
+- Web-routes beveiligd met auth.session middleware
+- Custom exception handler (geen model-namen lekken)
+- TrustedProxies configuratie
 
 ## Laag 5: Ops
 
+Aanwezig:
+- CI/CD pipeline (GitHub Actions): PHPUnit, Pint linting, composer audit, npm audit, frontend build, migration check
+- Spatie Laravel Backup met verplichte encryptie
+- Productie-configuratie validatie bij startup
+- Health/ready endpoints
+
 Nog te bouwen:
-- CI/CD pipeline met lint, build, test, migration check.
-- Monitoring en uptime/SLA-dashboard.
-- Backup/restore runbook met jaarlijkse hersteltestregistratie.
+- Monitoring en uptime/SLA-dashboard
+- Backup/restore runbook met jaarlijkse hersteltestregistratie
+- Deployment-automatisering (Plesk/Cloud86)

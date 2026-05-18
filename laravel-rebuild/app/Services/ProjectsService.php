@@ -6,6 +6,7 @@ use App\Models\Project;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * Service voor de project-module van LaVita Urenregistratie.
@@ -43,8 +44,7 @@ class ProjectsService
 
     public function __construct(
         private readonly AuditService $auditService,
-    ) {
-    }
+    ) {}
 
     /**
      * Maak een nieuw project aan binnen de organisatie van de actor.
@@ -52,10 +52,10 @@ class ProjectsService
      * Vereiste rol: `owner` (Requirement 2.4).
      *
      * @param  array{code: string, name: string, description?: ?string, hourly_rate?: ?float, is_active?: bool}  $input
-     * @return array<string, mixed>  Genormaliseerde representatie van het project.
+     * @return array<string, mixed> Genormaliseerde representatie van het project.
      *
-     * @throws \Symfony\Component\HttpKernel\Exception\HttpException  403 met code `FORBIDDEN_ROLE` voor andere rollen.
-     * @throws ValidationException  422 wanneer `code` reeds bestaat binnen de organisatie.
+     * @throws HttpException 403 met code `FORBIDDEN_ROLE` voor andere rollen.
+     * @throws ValidationException 422 wanneer `code` reeds bestaat binnen de organisatie.
      */
     public function create(array $input, int $actorId): array
     {
@@ -99,8 +99,8 @@ class ProjectsService
      *
      * @param  array{code?: string, name?: string, description?: ?string, hourly_rate?: ?float, is_active?: bool}  $input
      *
-     * @throws \Symfony\Component\HttpKernel\Exception\HttpException  403 / 404
-     * @throws ValidationException  422 op duplicate code
+     * @throws HttpException 403 / 404
+     * @throws ValidationException 422 op duplicate code
      */
     public function update(int $projectId, array $input, int $actorId): array
     {
@@ -223,7 +223,7 @@ class ProjectsService
             $needle = '%'.strtolower(trim((string) $filters['search'])).'%';
             $query->where(function ($q) use ($needle) {
                 $q->whereRaw('LOWER(code) LIKE ?', [$needle])
-                  ->orWhereRaw('LOWER(name) LIKE ?', [$needle]);
+                    ->orWhereRaw('LOWER(name) LIKE ?', [$needle]);
             });
         }
 
@@ -353,6 +353,9 @@ class ProjectsService
     /**
      * Cast een uurtarief-input naar een DECIMAL(8,2)-compatibele waarde,
      * of `null` indien niet opgegeven of leeg.
+     *
+     * Weigert negatieve waarden — een uurtarief kan niet negatief zijn.
+     * Weigert waarden boven 99999.99 (DECIMAL(8,2) max).
      */
     private function normalizeHourlyRate(mixed $value): ?string
     {
@@ -360,7 +363,21 @@ class ProjectsService
             return null;
         }
 
-        return number_format((float) $value, 2, '.', '');
+        $rate = (float) $value;
+
+        if ($rate < 0) {
+            throw ValidationException::withMessages([
+                'hourly_rate' => 'Uurtarief mag niet negatief zijn.',
+            ]);
+        }
+
+        if ($rate > 99999.99) {
+            throw ValidationException::withMessages([
+                'hourly_rate' => 'Uurtarief mag maximaal 99999.99 zijn.',
+            ]);
+        }
+
+        return number_format($rate, 2, '.', '');
     }
 
     /**

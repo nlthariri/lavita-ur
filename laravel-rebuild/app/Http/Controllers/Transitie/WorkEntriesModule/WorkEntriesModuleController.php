@@ -3,7 +3,9 @@
 namespace App\Http\Controllers\Transitie\WorkEntriesModule;
 
 use App\Http\Controllers\Controller;
+use App\Services\CopyWeekService;
 use App\Services\WorkEntriesService;
+use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -11,9 +13,10 @@ use Illuminate\Validation\ValidationException;
 
 class WorkEntriesModuleController extends Controller
 {
-    public function __construct(private readonly WorkEntriesService $workEntriesService)
-    {
-    }
+    public function __construct(
+        private readonly WorkEntriesService $workEntriesService,
+        private readonly CopyWeekService $copyWeekService,
+    ) {}
 
     public function postInternalWorkEntries(Request $request): JsonResponse
     {
@@ -23,15 +26,15 @@ class WorkEntriesModuleController extends Controller
         // `routes/api.php`). Een aparte inline-check is daarom niet meer nodig.
 
         $validated = $request->validate([
-            'employee_id' => ['required', 'integer'],
+            'employee_id' => ['required', 'integer', 'min:1'],
             'entry_date' => ['required', 'date_format:Y-m-d'],
             'start_time' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
             'end_time' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
             'pause_minutes' => ['required', 'integer', 'min:0', 'max:240'],
-            'type' => ['sometimes', 'string', 'in:WORK,SICK,HOLIDAY,OTHER'],
+            'type' => ['sometimes', 'string', 'in:WORK,SICK,LEAVE,HOLIDAY,OTHER'],
             'note' => ['sometimes', 'nullable', 'string', 'max:500'],
-            'project_id' => ['sometimes', 'nullable', 'integer'],
-            'cost_center_id' => ['sometimes', 'nullable', 'integer'],
+            'project_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'cost_center_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
         ]);
 
         $entry = $this->workEntriesService->create($validated, (int) $request->user()->id);
@@ -85,10 +88,10 @@ class WorkEntriesModuleController extends Controller
             'start_time' => ['sometimes', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
             'end_time' => ['sometimes', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
             'pause_minutes' => ['sometimes', 'integer', 'min:0', 'max:240'],
-            'type' => ['sometimes', 'string', 'in:WORK,SICK,HOLIDAY,OTHER'],
+            'type' => ['sometimes', 'string', 'in:WORK,SICK,LEAVE,HOLIDAY,OTHER'],
             'note' => ['sometimes', 'nullable', 'string', 'max:500'],
-            'project_id' => ['sometimes', 'nullable', 'integer'],
-            'cost_center_id' => ['sometimes', 'nullable', 'integer'],
+            'project_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'cost_center_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
         ]);
 
         $entry = $this->workEntriesService->update(
@@ -111,5 +114,46 @@ class WorkEntriesModuleController extends Controller
         $this->workEntriesService->delete($id, (int) $request->user()->id);
 
         return response()->noContent();
+    }
+
+    /**
+     * Kopieer een werkweek naar een doelweek. Alleen owner/manager.
+     * Valideert dat employee_id, source_week_start en target_week_start
+     * aanwezig zijn en dat beide datums maandagen zijn.
+     *
+     * Requirements: 8.1, 8.6
+     */
+    public function postCopyWeek(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'employee_id' => ['required', 'integer'],
+            'source_week_start' => ['required', 'date_format:Y-m-d'],
+            'target_week_start' => ['required', 'date_format:Y-m-d'],
+        ]);
+
+        // Maandagcheck (aanvullend op service-level check; vroegtijdige 422)
+        $source = Carbon::parse($validated['source_week_start']);
+        $target = Carbon::parse($validated['target_week_start']);
+
+        if ($source->dayOfWeek !== Carbon::MONDAY) {
+            throw ValidationException::withMessages([
+                'source_week_start' => 'source_week_start moet een maandag zijn.',
+            ]);
+        }
+
+        if ($target->dayOfWeek !== Carbon::MONDAY) {
+            throw ValidationException::withMessages([
+                'target_week_start' => 'target_week_start moet een maandag zijn.',
+            ]);
+        }
+
+        $result = $this->copyWeekService->copyWeek(
+            (int) $validated['employee_id'],
+            $validated['source_week_start'],
+            $validated['target_week_start'],
+            (int) $request->user()->id,
+        );
+
+        return response()->json($result);
     }
 }

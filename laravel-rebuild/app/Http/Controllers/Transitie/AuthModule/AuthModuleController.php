@@ -3,10 +3,12 @@
 namespace App\Http\Controllers\Transitie\AuthModule;
 
 use App\Http\Controllers\Controller;
+use App\Models\User;
 use App\Services\AccountProvisioningService;
 use App\Services\AuthMfaService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
 
 class AuthModuleController extends Controller
@@ -14,8 +16,7 @@ class AuthModuleController extends Controller
     public function __construct(
         private readonly AuthMfaService $authMfaService,
         private readonly AccountProvisioningService $accountProvisioningService,
-    ) {
-    }
+    ) {}
 
     public function postAuthLogin(Request $request): JsonResponse
     {
@@ -99,7 +100,7 @@ class AuthModuleController extends Controller
             $request->string('code')->toString(),
         );
 
-        if (!$verified) {
+        if (! $verified) {
             throw ValidationException::withMessages([
                 'code' => 'MFA-code is ongeldig.',
             ]);
@@ -117,7 +118,7 @@ class AuthModuleController extends Controller
     {
         $actor = $request->user();
 
-        if (!in_array((string) $actor->role, ['owner', 'manager'], true)) {
+        if (! in_array((string) $actor->role, ['owner', 'manager'], true)) {
             return response()->json([
                 'message' => 'Onvoldoende rechten voor account-aanmaak.',
             ], 403);
@@ -127,7 +128,7 @@ class AuthModuleController extends Controller
             'password_confirmation' => ['required', 'string', 'min:12'],
             'name' => ['required', 'string', 'max:255'],
             'full_name' => ['sometimes', 'nullable', 'string', 'max:255'],
-            'email' => ['required', 'email:rfc', 'max:254', 'unique:users,email'],
+            'email' => ['required', 'email:rfc', 'max:254'],
             'role' => ['required', 'string', 'in:manager,employee,boekhouder'],
             'team_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
             'is_active' => ['sometimes', 'boolean'],
@@ -135,11 +136,25 @@ class AuthModuleController extends Controller
             'employment_end' => ['sometimes', 'nullable', 'date_format:Y-m-d', 'after_or_equal:employment_start'],
         ]);
 
+        // Uniqueness-check via email_index_hash i.p.v. de encrypted email-kolom.
+        // De `unique:users,email` rule werkt niet met encrypted kolommen omdat
+        // elke encryptie een ander ciphertext oplevert (non-deterministic).
+        $emailHash = hash('sha256', strtolower(trim((string) $validated['email'])));
+        $existingUser = User::where('email_index_hash', $emailHash)
+            ->whereNull('deleted_at')
+            ->exists();
+
+        if ($existingUser) {
+            throw ValidationException::withMessages([
+                'email' => 'Dit e-mailadres is al in gebruik.',
+            ]);
+        }
+
         // Re-auth: wachtwoord bevestigen voor aanmaak van accounts (F-12)
         // De sessie-actor heeft geen wachtwoord geladen → los ophalen uit DB
-        $actorPassword = \App\Models\User::query()->select('id', 'password')->find($actor->id)?->password;
-        if (!$actorPassword || !\Illuminate\Support\Facades\Hash::check($validated['password_confirmation'], $actorPassword)) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+        $actorPassword = User::query()->select('id', 'password')->find($actor->id)?->password;
+        if (! $actorPassword || ! Hash::check($validated['password_confirmation'], $actorPassword)) {
+            throw ValidationException::withMessages([
                 'password_confirmation' => 'Wachtwoordbevestiging is onjuist.',
             ]);
         }

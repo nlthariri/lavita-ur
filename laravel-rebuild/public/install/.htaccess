@@ -1,0 +1,7 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine Off
+</IfModule>
+
+# Sta directe toegang tot de installer toe
+# (Laravel's root .htaccess redirect alles naar public/index.php,
+#  maar deze .htaccess overschrijft dat voor de /install map)

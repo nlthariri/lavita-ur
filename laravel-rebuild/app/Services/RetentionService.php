@@ -17,13 +17,100 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 class RetentionService
 {
     private const EMAIL_BODY_RETENTION_DAYS = 30;
+
     private const AUDIT_IP_RETENTION_DAYS = 90;
+
     private const BATCH_SIZE = 100;
+
     private const OBJECTION_PLACEHOLDER = '[gepseudonimiseerd conform retentiebeleid]';
+
+    public function __construct(
+        private readonly AuditService $auditService,
+    ) {}
+
+    /**
+     * Pseudonimiseer een gebruikersaccount (AVG recht op verwijdering).
+     *
+     * Overschrijft name/full_name/email/phone met pseudonieme waarden,
+     * zet is_active=false, deleted_at=now(), en werkt email_index_hash bij.
+     *
+     * @throws HttpException 409 OPEN_OBJECTIONS als er open bezwaren zijn
+     */
+    public function pseudonymize(int $userId, int $actorId): void
+    {
+        $user = User::findOrFail($userId);
+        $actor = User::findOrFail($actorId);
+
+        // Check voor open bezwaren
+        $workEntryIds = WorkEntry::where('employee_id', $userId)->pluck('id');
+        $hasOpenObjections = Objection::whereIn('work_entry_id', $workEntryIds)
+            ->where('status', 'OPEN')
+            ->exists();
+
+        if ($hasOpenObjections) {
+            abort(409, json_encode([
+                'error' => 'Account kan niet worden verwijderd zolang er openstaande bezwaren zijn.',
+                'code' => 'OPEN_OBJECTIONS',
+            ]));
+        }
+
+        DB::transaction(function () use ($user, $userId, $actorId): void {
+            $pseudoEmail = "user-{$userId}@redacted.lavita.local";
+            $emailIndexHash = hash('sha256', strtolower($pseudoEmail));
+
+            $beforeData = [
+                'name' => $user->name,
+                'full_name' => $user->full_name,
+                'email' => $user->email,
+                'is_active' => $user->is_active,
+            ];
+
+            $user->forceFill([
+                'name' => "user-{$userId}",
+                'full_name' => null,
+                'email' => $pseudoEmail,
+                'phone' => null,
+                'is_active' => false,
+                'deleted_at' => now(),
+                'deleted_by_id' => $actorId,
+            ]);
+
+            // Update email_index_hash if column exists
+            if (Schema::hasColumn('users', 'email_index_hash')) {
+                $user->email_index_hash = $emailIndexHash;
+            }
+
+            $user->save();
+
+            // Trek alle actieve sessies in zodat de gebruiker direct
+            // wordt uitgelogd na pseudonimisering (K-06 fix).
+            AuthSession::where('user_id', $userId)
+                ->whereNull('revoked_at')
+                ->update(['revoked_at' => now()]);
+
+            // Schrijf audit-event ACCOUNT_PSEUDONYMIZED
+            $this->auditService->record([
+                'organization_id' => $user->organization_id,
+                'actor_id' => $actorId,
+                'action' => 'ACCOUNT_PSEUDONYMIZED',
+                'target_type' => 'user',
+                'target_id' => (string) $userId,
+                'before_data' => $beforeData,
+                'after_data' => [
+                    'name' => "user-{$userId}",
+                    'full_name' => null,
+                    'email' => $pseudoEmail,
+                    'is_active' => false,
+                    'reason' => 'AVG recht op verwijdering',
+                ],
+            ]);
+        });
+    }
 
     public function run(?int $organizationId = null, bool $dryRun = false): array
     {
@@ -188,7 +275,7 @@ class RetentionService
 
     private function pseudonymizeOrganization(Organization $organization, bool $dryRun): array
     {
-        $cutoff = CarbonImmutable::now()->subYears($organization->retention_years ?: 7)->toDateString();
+        $cutoff = CarbonImmutable::now()->subYears($organization->retention_years ?? 7)->toDateString();
 
         $userQuery = User::query()
             ->where('organization_id', $organization->id)
@@ -200,7 +287,7 @@ class RetentionService
                             ->whereDate('updated_at', '<', $cutoff);
                     });
             })
-            ->where('email', 'not like', 'deleted+%@anonymized.local');
+            ->where('name', '!=', 'Gepseudonimiseerd');
 
         $workEntryQuery = WorkEntry::query()
             ->where('organization_id', $organization->id)
@@ -254,6 +341,7 @@ class RetentionService
                             'name' => 'Gepseudonimiseerd',
                             'full_name' => 'Gepseudonimiseerd',
                             'email' => 'deleted+'.$alias.'@anonymized.local',
+                            'phone' => null,
                             'password' => Hash::make(Str::random(48)),
                             'remember_token' => null,
                             'updated_at' => now(),

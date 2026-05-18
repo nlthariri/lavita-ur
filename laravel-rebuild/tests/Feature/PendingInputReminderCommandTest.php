@@ -17,9 +17,10 @@ class PendingInputReminderCommandTest extends TestCase
 
     public function test_command_dispatches_reminder_for_missing_team_entries(): void
     {
-        Carbon::setTestNow('2026-05-17 09:00:00');
+        // Set to a Wednesday so previous weekdays are available.
+        Carbon::setTestNow('2026-05-20 09:00:00');
 
-        $org = Organization::create(['name' => 'Reminder BV']);
+        $org = Organization::create(['name' => 'Reminder BV', 'pending_input_threshold_days' => 3]);
         $team = Team::create(['organization_id' => $org->id, 'name' => 'Team A']);
 
         $manager = User::create([
@@ -40,6 +41,7 @@ class PendingInputReminderCommandTest extends TestCase
             'team_id' => $team->id,
             'role' => 'employee',
             'is_active' => true,
+            'email_reminders_opt_in' => true,
         ]);
 
         $employeeB = User::create([
@@ -50,29 +52,33 @@ class PendingInputReminderCommandTest extends TestCase
             'team_id' => $team->id,
             'role' => 'employee',
             'is_active' => true,
+            'email_reminders_opt_in' => true,
         ]);
 
+        // Employee A has a WORK entry on the previous Tuesday (2026-05-19).
         WorkEntry::create([
             'organization_id' => $org->id,
             'employee_id' => $employeeA->id,
             'team_id' => $team->id,
             'registered_by_id' => $manager->id,
-            'entry_date' => '2026-05-16',
-            'start_at' => '2026-05-16 08:00:00',
-            'end_at' => '2026-05-16 16:00:00',
+            'entry_date' => '2026-05-19',
+            'start_at' => '2026-05-19 08:00:00',
+            'end_at' => '2026-05-19 16:00:00',
             'pause_minutes' => 30,
             'net_minutes' => 450,
+            'type' => 'WORK',
             'is_finalized' => true,
         ]);
 
-        $this->artisan('reminder:pending-input', ['--days' => 1])
+        // Employee B has no entries → should trigger reminder.
+        $this->artisan('reminder:pending-input')
             ->assertExitCode(0);
 
         $this->assertDatabaseHas('email_outbox', [
             'organization_id' => $org->id,
             'user_id' => $manager->id,
             'recipient' => $manager->email,
-            'type' => 'reminder_open_entries',
+            'type' => 'pending_input_reminder',
             'status' => 'queued',
         ]);
 
@@ -90,9 +96,9 @@ class PendingInputReminderCommandTest extends TestCase
 
     public function test_command_dry_run_writes_evidence_without_dispatch(): void
     {
-        Carbon::setTestNow('2026-05-17 09:00:00');
+        Carbon::setTestNow('2026-05-20 09:00:00');
 
-        $org = Organization::create(['name' => 'Dry Run BV']);
+        $org = Organization::create(['name' => 'Dry Run BV', 'pending_input_threshold_days' => 3]);
         $team = Team::create(['organization_id' => $org->id, 'name' => 'Team B']);
 
         $manager = User::create([
@@ -113,15 +119,16 @@ class PendingInputReminderCommandTest extends TestCase
             'team_id' => $team->id,
             'role' => 'employee',
             'is_active' => true,
+            'email_reminders_opt_in' => true,
         ]);
 
-        $this->artisan('reminder:pending-input', ['--days' => 1, '--dry-run' => true])
+        $this->artisan('reminder:pending-input', ['--dry-run' => true])
             ->assertExitCode(0);
 
         $this->assertDatabaseMissing('email_outbox', [
             'organization_id' => $org->id,
             'user_id' => $manager->id,
-            'type' => 'reminder_open_entries',
+            'type' => 'pending_input_reminder',
         ]);
 
         $jobRun = SystemJobRun::query()
@@ -131,6 +138,46 @@ class PendingInputReminderCommandTest extends TestCase
 
         $this->assertNotNull($jobRun);
         $this->assertSame('completed', $jobRun->status);
+
+        Carbon::setTestNow();
+    }
+
+    public function test_opt_out_employee_is_excluded_from_reminders(): void
+    {
+        Carbon::setTestNow('2026-05-20 09:00:00');
+
+        $org = Organization::create(['name' => 'OptOut BV', 'pending_input_threshold_days' => 3]);
+        $team = Team::create(['organization_id' => $org->id, 'name' => 'Team C']);
+
+        $manager = User::create([
+            'name' => 'Manager',
+            'email' => 'manager-opt@reminder.nl',
+            'password' => bcrypt('x'),
+            'organization_id' => $org->id,
+            'team_id' => $team->id,
+            'role' => 'manager',
+            'is_active' => true,
+        ]);
+
+        // Employee with opt-out — no reminder should be sent.
+        User::create([
+            'name' => 'Employee Opt-Out',
+            'email' => 'employee-optout@reminder.nl',
+            'password' => bcrypt('x'),
+            'organization_id' => $org->id,
+            'team_id' => $team->id,
+            'role' => 'employee',
+            'is_active' => true,
+            'email_reminders_opt_in' => false,
+        ]);
+
+        $this->artisan('reminder:pending-input')
+            ->assertExitCode(0);
+
+        $this->assertDatabaseMissing('email_outbox', [
+            'organization_id' => $org->id,
+            'type' => 'pending_input_reminder',
+        ]);
 
         Carbon::setTestNow();
     }

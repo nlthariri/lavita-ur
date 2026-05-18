@@ -3,9 +3,9 @@
 namespace App\Http\Middleware;
 
 use Closure;
-use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Middleware\ThrottleRequests;
+use Predis\Connection\ConnectionException;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -32,7 +32,7 @@ class FailClosedThrottle extends ThrottleRequests
             return parent::handle($request, $next, $maxAttempts, $decayMinutes, $prefix);
         } catch (\RuntimeException $e) {
             return $this->blockOnCacheFailure($request, $e);
-        } catch (\Predis\Connection\ConnectionException $e) {
+        } catch (ConnectionException $e) {
             return $this->blockOnCacheFailure($request, $e);
         } catch (\RedisException $e) {
             return $this->blockOnCacheFailure($request, $e);

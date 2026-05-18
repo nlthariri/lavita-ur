@@ -3,7 +3,6 @@
 namespace Tests\Feature;
 
 use App\Models\Organization;
-use App\Models\Team;
 use App\Models\User;
 use App\Models\WorkEntry;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -14,8 +13,11 @@ class AtwModuleContractTest extends TestCase
     use RefreshDatabase;
 
     private Organization $org;
+
     private User $owner;
+
     private User $employee;
+
     private string $token;
 
     protected function setUp(): void

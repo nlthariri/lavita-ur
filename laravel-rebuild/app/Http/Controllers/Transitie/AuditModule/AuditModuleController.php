@@ -11,8 +11,7 @@ class AuditModuleController extends Controller
 {
     public function __construct(
         private readonly AuditService $auditService,
-    ) {
-    }
+    ) {}
 
     /**
      * GET /internal/audit/export
@@ -21,18 +20,28 @@ class AuditModuleController extends Controller
      */
     public function getAuditExport(Request $request): JsonResponse
     {
-        $requesterId = (int) $request->user()->id;
+        $actor = $request->user();
 
-        $filters = $request->only([
-            'action',
-            'target_type',
-            'target_id',
-            'actor_id',
-            'start_date',
-            'end_date',
+        // Expliciete rolcheck — defense-in-depth naast service-level check
+        if (! in_array((string) $actor->role, ['owner', 'manager'], true)) {
+            return response()->json([
+                'error' => 'Onvoldoende rechten voor audit export.',
+                'code' => 'FORBIDDEN_ROLE',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'action' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'target_type' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'target_id' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'actor_id' => ['sometimes', 'nullable', 'integer', 'min:1'],
+            'start_date' => ['sometimes', 'nullable', 'date_format:Y-m-d'],
+            'end_date' => ['sometimes', 'nullable', 'date_format:Y-m-d', 'after_or_equal:start_date'],
         ]);
 
-        $result = $this->auditService->export($requesterId, $filters);
+        $filters = array_filter($validated, fn ($v) => $v !== null);
+
+        $result = $this->auditService->export((int) $actor->id, $filters);
 
         return response()->json($result, 200);
     }

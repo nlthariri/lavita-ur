@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Transitie\AuthModule;
 
 use App\Http\Controllers\Controller;
+use App\Rules\StrongPassword;
 use App\Services\PasswordResetService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -14,8 +15,7 @@ class PasswordResetController extends Controller
 
     public function __construct(
         private readonly PasswordResetService $passwordResetService,
-    ) {
-    }
+    ) {}
 
     /**
      * POST /auth/password-reset/request
@@ -51,7 +51,7 @@ class PasswordResetController extends Controller
         try {
             $data = $request->validate([
                 'token' => 'required|string',
-                'password' => 'required|string|min:10|max:128',
+                'password' => ['required', 'string', new StrongPassword],
             ]);
 
             $this->passwordResetService->resetPassword($data['token'], $data['password']);

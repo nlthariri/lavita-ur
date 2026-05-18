@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\EmailTemplate;
+use Illuminate\Validation\ValidationException;
 
 class EmailTemplateService
 {
@@ -12,14 +13,21 @@ class EmailTemplateService
         'password_reset',
         'monthly_report',
         'work_entry_finalized',
+        'work_entry_updated',
+        'work_entry_deleted',
         'objection_submitted',
         'objection_reviewed',
+        'objection_review',
         'reminder_open_entries',
+        'pending_input_reminder',
         'atw_daily_limit',
         'atw_weekly_warning',
         'atw_weekly_limit',
+        'atw_warning',
+        'atw_critical',
         'atw_sixteen_week_average',
         'atw_rest_period',
+        'anniversary',
     ];
 
     /**
@@ -43,7 +51,7 @@ class EmailTemplateService
                 ."Stel eerst uw wachtwoord in via onderstaande link. Deze link is {{ valid_hours }} uur geldig:\n"
                 ."{{ reset_link }}\n\n"
                 ."Met vriendelijke groet,\n"
-                ."LaVita Urenregistratie",
+                .'LaVita Urenregistratie',
             'body_html' => '<p>Beste {{ full_name }},</p>'
                 .'<p>Er is een account voor u aangemaakt in <strong>LaVita Urenregistratie</strong> van <strong>{{ organization_name }}</strong>.</p>'
                 .'<p><strong>Uw gegevens</strong></p>'
@@ -55,6 +63,20 @@ class EmailTemplateService
                 .'<p>U kunt inloggen via <a href="{{ login_url }}">{{ login_url }}</a>.</p>'
                 .'<p>Stel eerst uw wachtwoord in via onderstaande link. Deze link is <strong>{{ valid_hours }} uur</strong> geldig:</p>'
                 .'<p><a href="{{ reset_link }}">{{ reset_link }}</a></p>'
+                .'<p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
+        ],
+        'anniversary' => [
+            'subject' => 'Felicitatie: {{ years }} jaar in dienst!',
+            'body_text' => "Beste collega,\n\n"
+                ."Wij willen {{ full_name }} van harte feliciteren met {{ years }} jaar dienstverband!\n\n"
+                ."{{ full_name }} is op {{ employment_start }} begonnen en viert vandaag dit mooie jubileum.\n\n"
+                ."Hartelijk gefeliciteerd!\n\n"
+                ."Met vriendelijke groet,\n"
+                .'LaVita Urenregistratie',
+            'body_html' => '<p>Beste collega,</p>'
+                .'<p>Wij willen <strong>{{ full_name }}</strong> van harte feliciteren met <strong>{{ years }} jaar</strong> dienstverband!</p>'
+                .'<p>{{ full_name }} is op <strong>{{ employment_start }}</strong> begonnen en viert vandaag dit mooie jubileum.</p>'
+                .'<p>Hartelijk gefeliciteerd!</p>'
                 .'<p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
         ],
     ];
@@ -97,7 +119,7 @@ class EmailTemplateService
             return $input;
         }
 
-        if (!$this->isSupportedType($type)) {
+        if (! $this->isSupportedType($type)) {
             return $input;
         }
 
@@ -106,7 +128,7 @@ class EmailTemplateService
         // gerenderd (bv. via `render()` direct aangeroepen door
         // `AccountProvisioningService`). In dat geval mag deze service
         // niets meer overschrijven.
-        if (!isset($input['template_vars']) || !is_array($input['template_vars'])) {
+        if (! isset($input['template_vars']) || ! is_array($input['template_vars'])) {
             return $input;
         }
 
@@ -116,7 +138,7 @@ class EmailTemplateService
             ->where('is_active', true)
             ->first();
 
-        if (!$template) {
+        if (! $template) {
             return $input;
         }
 
@@ -162,7 +184,7 @@ class EmailTemplateService
             $bodyTextTpl = (string) $default['body_text'];
             $bodyHtmlTpl = (string) $default['body_html'];
         } else {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'type' => 'Geen template gevonden voor type '.$type.'.',
             ]);
         }
@@ -189,7 +211,7 @@ class EmailTemplateService
             function (array $matches) use ($vars, $escape): string {
                 $key = (string) $matches[1];
                 $value = $vars[$key] ?? '';
-                if (!is_scalar($value) && $value !== null) {
+                if (! is_scalar($value) && $value !== null) {
                     return '';
                 }
                 $valueString = (string) $value;
@@ -207,8 +229,8 @@ class EmailTemplateService
 
     private function assertSupportedType(string $type): void
     {
-        if (!$this->isSupportedType($type)) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+        if (! $this->isSupportedType($type)) {
+            throw ValidationException::withMessages([
                 'type' => 'Ongeldig e-mailtemplate type.',
             ]);
         }

@@ -22,7 +22,6 @@ class AuditEvent extends Model
         'ip_address',
         'user_agent',
         'scrubbed_at',
-        'created_at',
     ];
 
     protected $casts = [

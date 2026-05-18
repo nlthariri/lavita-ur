@@ -8,9 +8,9 @@ use App\Models\MonthlyReportRun;
 use App\Models\Organization;
 use App\Models\User;
 use App\Services\EmailOutboxService;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Database\QueryException;
 use Tests\TestCase;
 
 class EmailFlowsModuleContractTest extends TestCase
@@ -18,8 +18,11 @@ class EmailFlowsModuleContractTest extends TestCase
     use RefreshDatabase;
 
     private Organization $org;
+
     private User $owner;
+
     private User $boekhouder;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -53,9 +56,9 @@ class EmailFlowsModuleContractTest extends TestCase
             'body_html' => '<p>Hallo</p>',
             'organization_id' => $this->org->id,
         ])
-        ->assertStatus(202)
-        ->assertJsonFragment(['status' => 'queued', 'idempotent' => false])
-        ->assertJsonStructure(['id', 'status', 'idempotent', 'correlation_id']);
+            ->assertStatus(202)
+            ->assertJsonFragment(['status' => 'queued', 'idempotent' => false])
+            ->assertJsonStructure(['id', 'status', 'idempotent', 'correlation_id']);
 
         $this->assertDatabaseCount('email_outbox', 1);
         $this->assertDatabaseHas('email_outbox', [
@@ -169,8 +172,8 @@ class EmailFlowsModuleContractTest extends TestCase
             'organization_id' => $this->org->id,
             'period_month' => 'mei-2026',  // ongeldig formaat
         ])
-        ->assertStatus(422)
-        ->assertJsonValidationErrors(['period_month']);
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['period_month']);
     }
 
     public function test_monthly_report_queues_emails_for_owner_and_manager(): void
@@ -184,9 +187,9 @@ class EmailFlowsModuleContractTest extends TestCase
             'organization_id' => $this->org->id,
             'period_month' => '2026-04',
         ])
-        ->assertStatus(202)
-        ->assertJsonFragment(['period' => '2026-04', 'queued_for' => 2])
-        ->assertJsonStructure(['run_id', 'period', 'organization_id', 'initiated_by_user_id', 'correlation_id', 'queued_for']);
+            ->assertStatus(202)
+            ->assertJsonFragment(['period' => '2026-04', 'queued_for' => 2])
+            ->assertJsonStructure(['run_id', 'period', 'organization_id', 'initiated_by_user_id', 'correlation_id', 'queued_for']);
 
         // Owner en manager elk een e-mail in de outbox
         $this->assertDatabaseCount('email_outbox', 2);
@@ -238,7 +241,8 @@ class EmailFlowsModuleContractTest extends TestCase
             'organization_id' => $this->org->id,
         ])
             ->assertStatus(403)
-            ->assertJsonPath('message', 'Onvoldoende rechten voor e-mail dispatch.');
+            ->assertJsonPath('code', 'READ_ONLY_ROLE')
+            ->assertJsonPath('error', 'Boekhouder heeft alleen read-only toegang.');
     }
 
     public function test_boekhouder_cannot_start_monthly_report(): void
@@ -248,7 +252,8 @@ class EmailFlowsModuleContractTest extends TestCase
             'period_month' => '2026-04',
         ])
             ->assertStatus(403)
-            ->assertJsonPath('message', 'Onvoldoende rechten voor maandrapportage.');
+            ->assertJsonPath('code', 'READ_ONLY_ROLE')
+            ->assertJsonPath('error', 'Boekhouder heeft alleen read-only toegang.');
     }
 
     // ─── Service: exponential backoff ────────────────────────────────────────
@@ -477,7 +482,8 @@ class EmailFlowsModuleContractTest extends TestCase
             'body_html_template' => '<p>x</p>',
         ], ['Authorization' => 'Bearer '.$boekhouderToken])
             ->assertStatus(403)
-            ->assertJsonPath('message', 'Onvoldoende rechten voor e-mailtemplates.');
+            ->assertJsonPath('code', 'READ_ONLY_ROLE')
+            ->assertJsonPath('error', 'Boekhouder heeft alleen read-only toegang.');
 
         $this->getWithAuth($this->boekhouder, '/api/internal/email/templates/monthly_report')
             ->assertStatus(403)

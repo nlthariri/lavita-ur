@@ -4,9 +4,12 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class WorkEntry extends Model
 {
+    use SoftDeletes;
+
     protected $fillable = [
         'organization_id',
         'employee_id',
@@ -33,6 +36,7 @@ class WorkEntry extends Model
         'net_minutes' => 'integer',
         'project_id' => 'integer',
         'cost_center_id' => 'integer',
+        'deleted_at' => 'datetime',
     ];
 
     public function organization(): BelongsTo

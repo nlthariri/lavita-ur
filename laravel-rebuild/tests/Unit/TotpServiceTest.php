@@ -12,7 +12,7 @@ class TotpServiceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->totp = new TotpService();
+        $this->totp = new TotpService;
     }
 
     public function test_generated_secret_is_valid_base32(): void

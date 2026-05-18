@@ -7,6 +7,7 @@ use App\Models\MfaSecret;
 use App\Models\User;
 use Illuminate\Foundation\Testing\TestCase as BaseTestCase;
 use Illuminate\Support\Str;
+use Illuminate\Testing\TestResponse;
 
 abstract class TestCase extends BaseTestCase
 {
@@ -48,7 +49,7 @@ abstract class TestCase extends BaseTestCase
     /**
      * Stuur een GET-request met Bearer-authenticatie.
      */
-    protected function getWithAuth(User $user, string $uri, array $headers = []): \Illuminate\Testing\TestResponse
+    protected function getWithAuth(User $user, string $uri, array $headers = []): TestResponse
     {
         $token = $this->createBearerToken($user);
 
@@ -58,11 +59,10 @@ abstract class TestCase extends BaseTestCase
     /**
      * Stuur een POST-request met Bearer-authenticatie.
      */
-    protected function postWithAuth(User $user, string $uri, array $data = []): \Illuminate\Testing\TestResponse
+    protected function postWithAuth(User $user, string $uri, array $data = []): TestResponse
     {
         $token = $this->createBearerToken($user);
 
         return $this->postJson($uri, $data, ['Authorization' => 'Bearer '.$token]);
     }
 }
-

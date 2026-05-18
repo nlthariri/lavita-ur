@@ -34,8 +34,7 @@ class ProjectsModuleController extends Controller
 {
     public function __construct(
         private readonly ProjectsService $projectsService,
-    ) {
-    }
+    ) {}
 
     /**
      * GET /api/internal/projects

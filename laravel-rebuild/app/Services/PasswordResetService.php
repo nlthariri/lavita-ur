@@ -12,8 +12,7 @@ class PasswordResetService
 
     public function __construct(
         private readonly EmailOutboxService $emailOutboxService,
-    ) {
-    }
+    ) {}
 
     /**
      * Genereer een stateless HMAC-signed reset-token.
@@ -34,16 +33,23 @@ class PasswordResetService
 
     /**
      * Stuur een reset-e-mail naar het opgegeven adres (timing-safe: ook bij
-     * onbekend adres wordt een generieke respons gegeven).
+     * onbekend adres wordt een generieke respons gegeven met vergelijkbare
+     * response-tijd).
      */
     public function requestReset(string $email): void
     {
-        $user = User::where('email', strtolower(trim($email)))
+        $user = User::where('email_index_hash', hash('sha256', strtolower(trim($email))))
             ->where('is_active', true)
             ->first();
 
-        if (!$user) {
-            return; // Generiek — geen timing-aanval info
+        if (! $user) {
+            // Timing-safe: simuleer de verwerkingstijd van een echte
+            // token-generatie + outbox-dispatch om timing-aanvallen te
+            // voorkomen. usleep(50-150ms random) maakt het onmogelijk
+            // om via response-tijd te bepalen of het adres bestaat.
+            usleep(random_int(50_000, 150_000));
+
+            return;
         }
 
         $token = $this->createToken($user->id);
@@ -72,7 +78,7 @@ class PasswordResetService
 
         $user = User::select('id', 'password', 'is_active')->find($payload['userId'] ?? 0);
 
-        if (!$user || !$user->is_active) {
+        if (! $user || ! $user->is_active) {
             throw ValidationException::withMessages([
                 'token' => 'Resetlink is ongeldig of verlopen.',
             ]);
@@ -80,7 +86,7 @@ class PasswordResetService
 
         // Verifieer signature (timing-safe)
         $expected = $this->sign("{$user->id}.{$payload['exp']}.{$user->password}");
-        if (!hash_equals($expected, (string) ($payload['sig'] ?? ''))) {
+        if (! hash_equals($expected, (string) ($payload['sig'] ?? ''))) {
             throw ValidationException::withMessages([
                 'token' => 'Resetlink is ongeldig of verlopen.',
             ]);
@@ -112,7 +118,7 @@ class PasswordResetService
             $json = base64_decode(strtr($encodedToken, '-_', '+/'));
             $payload = json_decode($json, true, 3, JSON_THROW_ON_ERROR);
 
-            if (!is_array($payload)) {
+            if (! is_array($payload)) {
                 throw new \RuntimeException('Invalid payload.');
             }
 

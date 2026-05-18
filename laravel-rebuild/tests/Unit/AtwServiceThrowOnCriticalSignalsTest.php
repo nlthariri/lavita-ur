@@ -27,7 +27,7 @@ class AtwServiceThrowOnCriticalSignalsTest extends TestCase
         parent::setUp();
 
         $this->service = new AtwService(
-            new AtwEngine(),
+            new AtwEngine,
             Mockery::mock(EmailOutboxService::class),
             Mockery::mock(AuditService::class),
         );
@@ -258,7 +258,7 @@ class AtwServiceThrowOnCriticalSignalsTest extends TestCase
         $auditService = $this->makeRecordingAuditService($recorded);
 
         $service = new AtwService(
-            new AtwEngine(),
+            new AtwEngine,
             Mockery::mock(EmailOutboxService::class),
             $auditService,
         );
@@ -289,7 +289,7 @@ class AtwServiceThrowOnCriticalSignalsTest extends TestCase
         $auditService = $this->makeRecordingAuditService($recorded);
 
         $service = new AtwService(
-            new AtwEngine(),
+            new AtwEngine,
             Mockery::mock(EmailOutboxService::class),
             $auditService,
         );
@@ -349,7 +349,7 @@ class AtwServiceThrowOnCriticalSignalsTest extends TestCase
         $auditService = $this->makeRecordingAuditService($recorded);
 
         $service = new AtwService(
-            new AtwEngine(),
+            new AtwEngine,
             Mockery::mock(EmailOutboxService::class),
             $auditService,
         );
@@ -386,7 +386,7 @@ class AtwServiceThrowOnCriticalSignalsTest extends TestCase
         $auditService = $this->makeRecordingAuditService($recorded);
 
         $service = new AtwService(
-            new AtwEngine(),
+            new AtwEngine,
             Mockery::mock(EmailOutboxService::class),
             $auditService,
         );
@@ -423,7 +423,8 @@ class AtwServiceThrowOnCriticalSignalsTest extends TestCase
      */
     private function makeRecordingAuditService(array &$recorded): AuditService
     {
-        return new class($recorded) extends AuditService {
+        return new class($recorded) extends AuditService
+        {
             /** @var array<int, array<string, mixed>> */
             private array $sink;
 

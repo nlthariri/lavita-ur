@@ -9,14 +9,12 @@ use Illuminate\Http\Request;
 
 class AtwModuleController extends Controller
 {
-    public function __construct(private readonly AtwService $atwService)
-    {
-    }
+    public function __construct(private readonly AtwService $atwService) {}
 
     public function postInternalWorkEntriesValidateAtw(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'employee_id' => ['required', 'integer'],
+            'employee_id' => ['required', 'integer', 'min:1'],
             'entry_date' => ['required', 'date_format:Y-m-d'],
             'start_time' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
             'end_time' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
@@ -41,7 +39,7 @@ class AtwModuleController extends Controller
     public function getInternalAtwSignals(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'user_id' => ['required', 'integer'],
+            'user_id' => ['required', 'integer', 'min:1'],
         ]);
 
         $signals = $this->atwService->getSignalsForUser((int) $validated['user_id'], (int) $request->user()->id);
@@ -49,4 +47,3 @@ class AtwModuleController extends Controller
         return response()->json(['data' => $signals, 'count' => count($signals)]);
     }
 }
-

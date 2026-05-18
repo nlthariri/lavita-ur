@@ -15,7 +15,7 @@ class VerifyEvidencePrivilegesCommand extends Command
     public function handle(EvidencePrivilegeVerificationService $service): int
     {
         $lock = Cache::lock('integrity:evidence-privileges:verify:any', 1800);
-        if (!$lock->get()) {
+        if (! $lock->get()) {
             $this->error('Een privilege-verificatie run is al actief.');
 
             return self::FAILURE;

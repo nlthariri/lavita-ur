@@ -2,10 +2,12 @@
 
 namespace Tests\Feature;
 
+use App\Models\AuditEvent;
 use App\Models\Organization;
 use App\Models\User;
 use App\Services\PasswordResetService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
 /**
@@ -19,7 +21,9 @@ class PasswordResetAuditModuleContractTest extends TestCase
     use RefreshDatabase;
 
     private Organization $org;
+
     private User $owner;
+
     private User $employee;
 
     protected function setUp(): void
@@ -109,7 +113,7 @@ class PasswordResetAuditModuleContractTest extends TestCase
 
         // Wachtwoord is daadwerkelijk gewijzigd
         $this->owner->refresh();
-        $this->assertTrue(\Illuminate\Support\Facades\Hash::check('NieuwWachtwoord99!', $this->owner->password));
+        $this->assertTrue(Hash::check('NieuwWachtwoord99!', $this->owner->password));
     }
 
     public function test_password_reset_confirm_fails_with_invalid_token(): void
@@ -158,7 +162,7 @@ class PasswordResetAuditModuleContractTest extends TestCase
     public function test_audit_export_returns_events_for_owner(): void
     {
         // Seed een audit event
-        \App\Models\AuditEvent::create([
+        AuditEvent::create([
             'organization_id' => $this->org->id,
             'actor_id' => $this->owner->id,
             'action' => 'work_entry.created',
@@ -188,14 +192,14 @@ class PasswordResetAuditModuleContractTest extends TestCase
 
     public function test_audit_export_filters_by_action(): void
     {
-        \App\Models\AuditEvent::create([
+        AuditEvent::create([
             'organization_id' => $this->org->id,
             'actor_id' => $this->owner->id,
             'action' => 'work_entry.created',
             'target_type' => 'work_entry',
             'target_id' => '1',
         ]);
-        \App\Models\AuditEvent::create([
+        AuditEvent::create([
             'organization_id' => $this->org->id,
             'actor_id' => $this->owner->id,
             'action' => 'objection.approved',

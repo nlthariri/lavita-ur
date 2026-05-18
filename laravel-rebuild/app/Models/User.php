@@ -10,15 +10,18 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
-#[Fillable(['name', 'full_name', 'email', 'password', 'organization_id', 'team_id', 'role', 'is_active', 'employment_start', 'employment_end'])]
+#[Fillable(['name', 'full_name', 'email', 'password', 'organization_id', 'team_id', 'role', 'is_active', 'email_reminders_opt_in', 'employment_start', 'employment_end', 'phone'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable;
+
+    use SoftDeletes;
 
     /**
      * Get the attributes that should be cast.
@@ -30,7 +33,26 @@ class User extends Authenticatable
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'full_name' => 'encrypted',
+            'email' => 'encrypted',
+            'phone' => 'encrypted',
+            'is_active' => 'boolean',
+            'employment_start' => 'date',
+            'employment_end' => 'date',
+            'deleted_at' => 'datetime',
         ];
+    }
+
+    protected static function boot(): void
+    {
+        parent::boot();
+
+        static::saving(function (User $user): void {
+            $email = $user->email;
+            if ($email !== null && $email !== '') {
+                $user->email_index_hash = hash('sha256', strtolower((string) $email));
+            }
+        });
     }
 
     public function authSessions(): HasMany
@@ -61,5 +83,10 @@ class User extends Authenticatable
     public function workEntriesRegistered(): HasMany
     {
         return $this->hasMany(WorkEntry::class, 'registered_by_id');
+    }
+
+    public function mfaRecoveryCodes(): HasMany
+    {
+        return $this->hasMany(MfaRecoveryCode::class);
     }
 }

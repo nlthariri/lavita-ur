@@ -3,9 +3,9 @@
 namespace Tests\Feature;
 
 use App\Models\Organization;
-use App\Models\Team;
 use App\Models\User;
 use App\Models\WorkEntry;
+use App\Services\ReportQueryService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -14,9 +14,13 @@ class ReportsModuleContractTest extends TestCase
     use RefreshDatabase;
 
     private Organization $org;
+
     private User $owner;
+
     private User $employee;
+
     private User $boekhouder;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -121,7 +125,7 @@ class ReportsModuleContractTest extends TestCase
         $response->assertStatus(200);
 
         // Bevestig scoping via shared query service direct
-        $queryService = app(\App\Services\ReportQueryService::class);
+        $queryService = app(ReportQueryService::class);
         $entries = $queryService->getEntries($this->employee->id, []);
         $this->assertCount(1, $entries);
         $this->assertSame($this->employee->id, $entries->first()->employee_id);
@@ -150,7 +154,7 @@ class ReportsModuleContractTest extends TestCase
         $response = $this->getWithAuth($this->employee, '/api/internal/reports/work-entries/excel?requester_id='.$this->owner->id);
         $response->assertStatus(200);
 
-        $entries = app(\App\Services\ReportQueryService::class)->getEntries($this->employee->id, []);
+        $entries = app(ReportQueryService::class)->getEntries($this->employee->id, []);
         $this->assertCount(1, $entries);
     }
 

@@ -43,7 +43,7 @@ class RetentionCommandTest extends TestCase
             'error_message' => 'persoonlijke fout',
         ]);
 
-        AuditEvent::create([
+        AuditEvent::query()->forceCreate([
             'organization_id' => $organization->id,
             'actor_id' => 999,
             'action' => 'audit.exported',
@@ -217,7 +217,7 @@ class RetentionCommandTest extends TestCase
             'sent_at' => now()->subDays(35),
         ]);
 
-        $targetAudit = AuditEvent::create([
+        $targetAudit = AuditEvent::query()->forceCreate([
             'organization_id' => $target->id,
             'actor_id' => 1,
             'action' => 'target.action',
@@ -226,7 +226,7 @@ class RetentionCommandTest extends TestCase
             'ip_address' => '198.51.100.10',
             'created_at' => now()->subDays(100),
         ]);
-        $otherAudit = AuditEvent::create([
+        $otherAudit = AuditEvent::query()->forceCreate([
             'organization_id' => $other->id,
             'actor_id' => 2,
             'action' => 'other.action',

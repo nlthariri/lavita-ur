@@ -36,8 +36,7 @@ class CostCentersModuleController extends Controller
 {
     public function __construct(
         private readonly CostCentersService $costCentersService,
-    ) {
-    }
+    ) {}
 
     /**
      * GET /api/internal/cost-centers

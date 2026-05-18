@@ -1,17 +1,19 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Transitie\AccountsModule\AccountsModuleController;
 use App\Http\Controllers\Transitie\AtwModule\AtwModuleController;
 use App\Http\Controllers\Transitie\AuditModule\AuditModuleController;
 use App\Http\Controllers\Transitie\AuthModule\AuthModuleController;
 use App\Http\Controllers\Transitie\AuthModule\PasswordResetController;
 use App\Http\Controllers\Transitie\CostCentersModule\CostCentersModuleController;
 use App\Http\Controllers\Transitie\EmailFlowsModule\EmailFlowsModuleController;
+use App\Http\Controllers\Transitie\HolidaysModule\HolidaysModuleController;
 use App\Http\Controllers\Transitie\ObjectionsModule\ObjectionsModuleController;
 use App\Http\Controllers\Transitie\ProjectsModule\ProjectsModuleController;
 use App\Http\Controllers\Transitie\ReportsModule\ReportsModuleController;
 use App\Http\Controllers\Transitie\SystemModule\HealthController;
 use App\Http\Controllers\Transitie\WorkEntriesModule\WorkEntriesModuleController;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
@@ -45,6 +47,7 @@ Route::middleware(['internal.auth', 'throttle:api', 'bookkeeper.readonly'])->gro
     // Werkregels
     Route::post('/internal/work-entries', [WorkEntriesModuleController::class, 'postInternalWorkEntries']);
     Route::get('/internal/work-entries', [WorkEntriesModuleController::class, 'getInternalWorkEntries']);
+    Route::post('/internal/work-entries/copy-week', [WorkEntriesModuleController::class, 'postCopyWeek']);
     Route::get('/internal/work-entries/{id}', [WorkEntriesModuleController::class, 'getInternalWorkEntryById'])->whereNumber('id');
     Route::patch('/internal/work-entries/{id}', [WorkEntriesModuleController::class, 'patchInternalWorkEntryById'])->whereNumber('id');
     Route::delete('/internal/work-entries/{id}', [WorkEntriesModuleController::class, 'deleteInternalWorkEntryById'])->whereNumber('id');
@@ -75,6 +78,7 @@ Route::middleware(['internal.auth', 'throttle:api', 'bookkeeper.readonly'])->gro
     // Rapporten
     Route::get('/internal/reports/work-entries/pdf', [ReportsModuleController::class, 'getInternalReportsWorkEntriesPdf']);
     Route::get('/internal/reports/work-entries/excel', [ReportsModuleController::class, 'getInternalReportsWorkEntriesExcel']);
+    Route::get('/internal/reports/year-export', [ReportsModuleController::class, 'getYearExport']);
 
     // E-mail flows
     Route::post('/internal/email/dispatch', [EmailFlowsModuleController::class, 'postInternalEmailDispatch']);
@@ -84,4 +88,11 @@ Route::middleware(['internal.auth', 'throttle:api', 'bookkeeper.readonly'])->gro
 
     // Audit
     Route::get('/internal/audit/export', [AuditModuleController::class, 'getAuditExport']);
+
+    // Feestdagen (Requirement 7.6)
+    Route::get('/internal/holidays', [HolidaysModuleController::class, 'getInternalHolidays']);
+
+    // Accounts / AVG (Requirement 10)
+    Route::delete('/internal/accounts/{id}', [AccountsModuleController::class, 'deleteInternalAccount'])->whereNumber('id');
+    Route::get('/internal/accounts/{id}/data-export', [AccountsModuleController::class, 'getInternalAccountDataExport'])->whereNumber('id');
 });

@@ -13,17 +13,22 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Symfony\Component\Mailer\Mailer;
+use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport;
+use Symfony\Component\Mime\Address;
+use Symfony\Component\Mime\Email;
 
 class EmailOutboxService
 {
     private const BATCH_SIZE = 50;
+
     private const MAX_RETRY_DELAY_SECONDS = 300; // 5 minuten
+
     private const MAX_RETRY_COUNT = 5;
 
     public function __construct(
         private readonly EmailTemplateService $emailTemplateService,
-    ) {
-    }
+    ) {}
 
     /**
      * Voeg een e-mail toe aan de outbox (idempotent via sleutel).
@@ -54,6 +59,7 @@ class EmailOutboxService
         }
 
         $organizationId = (int) ($input['organization_id'] ?? 0);
+
         try {
             $item = DB::transaction(function () use ($input, $actorContext, $idempotencyKey, $organizationId): EmailOutbox {
                 $item = EmailOutbox::create([
@@ -135,21 +141,45 @@ class EmailOutboxService
     /**
      * Verwerk een batch openstaande outbox-items.
      * Exponential backoff: delay = min(2^retryCount, 300) seconden.
+     *
+     * Per-item processing: locks worden alleen gehouden tijdens korte
+     * DB-updates, NIET tijdens SMTP-sends. Dit voorkomt deadlocks en
+     * timeouts bij trage mailservers.
      */
     public function processBatch(): array
     {
-        $items = EmailOutbox::whereIn('status', ['queued', 'retrying'])
+        // Stap 1: Selecteer kandidaten ZONDER lock (snapshot van IDs).
+        $candidateIds = EmailOutbox::whereIn('status', ['queued', 'retrying'])
             ->where('next_attempt_at', '<=', now())
             ->orderBy('next_attempt_at')
             ->limit(self::BATCH_SIZE)
-            ->lockForUpdate()
-            ->get();
+            ->pluck('id');
 
         $sent = 0;
         $failed = 0;
 
-        DB::transaction(function () use ($items, &$sent, &$failed) {
-            foreach ($items as $item) {
+        foreach ($candidateIds as $itemId) {
+            // Stap 2a: Korte transactie — claim het item met lockForUpdate
+            // en verifieer dat het nog steeds eligible is.
+            $item = DB::transaction(function () use ($itemId) {
+                $item = EmailOutbox::where('id', $itemId)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($item === null) {
+                    return null;
+                }
+
+                // Verifieer eligibility (een andere worker kan het al hebben opgepakt)
+                if (! in_array($item->status, ['queued', 'retrying'], true)) {
+                    return null;
+                }
+
+                if ($item->next_attempt_at !== null && $item->next_attempt_at->gt(now())) {
+                    return null;
+                }
+
+                // Record send_attempt event binnen de transactie
                 $this->recordEvent(
                     outboxId: (int) $item->id,
                     eventType: 'send_attempt',
@@ -162,8 +192,27 @@ class EmailOutboxService
                     ],
                 );
 
-                try {
-                    $this->sendSmtp($item);
+                return $item;
+            });
+
+            if ($item === null) {
+                continue;
+            }
+
+            // Stap 2d: SMTP send BUITEN de transactie — geen DB-locks gehouden.
+            $smtpSuccess = false;
+            $smtpError = null;
+
+            try {
+                $this->sendSmtp($item);
+                $smtpSuccess = true;
+            } catch (\Throwable $e) {
+                $smtpError = $e;
+            }
+
+            // Stap 2e: Korte transactie — update status op basis van resultaat.
+            DB::transaction(function () use ($item, $smtpSuccess, $smtpError, &$sent, &$failed) {
+                if ($smtpSuccess) {
                     $item->update([
                         'status' => 'sent',
                         'sent_at' => now(),
@@ -179,7 +228,7 @@ class EmailOutboxService
                     );
 
                     $sent++;
-                } catch (\Throwable $e) {
+                } else {
                     $retryCount = $item->retry_count + 1;
                     $delaySec = min(2 ** $retryCount, self::MAX_RETRY_DELAY_SECONDS);
                     $isFinal = $retryCount >= self::MAX_RETRY_COUNT;
@@ -188,7 +237,7 @@ class EmailOutboxService
                         'status' => $isFinal ? 'failed' : 'retrying',
                         'retry_count' => $retryCount,
                         'next_attempt_at' => now()->addSeconds($delaySec),
-                        'error_message' => substr($e->getMessage(), 0, 1000),
+                        'error_message' => substr($smtpError->getMessage(), 0, 1000),
                     ]);
 
                     $this->recordEvent(
@@ -200,7 +249,7 @@ class EmailOutboxService
                         payload: [
                             'retry_count' => $retryCount,
                             'delay_seconds' => $delaySec,
-                            'error' => substr($e->getMessage(), 0, 500),
+                            'error' => substr($smtpError->getMessage(), 0, 500),
                         ],
                     );
 
@@ -210,11 +259,11 @@ class EmailOutboxService
                         'id' => $item->id,
                         'recipient' => $item->recipient,
                         'retry_count' => $retryCount,
-                        'error' => $e->getMessage(),
+                        'error' => $smtpError->getMessage(),
                     ]);
                 }
-            }
-        });
+            });
+        }
 
         return ['sent' => $sent, 'failed' => $failed, 'processed' => $sent + $failed];
     }
@@ -258,6 +307,8 @@ class EmailOutboxService
 
             $labelNl = $start->locale('nl')->translatedFormat('F Y');
             $key = 'monthly-report-'.$organizationId.'-'.$periodMonth.'-'.$user->id;
+            $safeName = e($user->name);
+            $safeLabelNl = e($labelNl);
 
             $this->dispatch([
                 'idempotency_key' => $key,
@@ -268,8 +319,8 @@ class EmailOutboxService
                 'subject' => 'Maandrapport werkregels '.$labelNl,
                 'body_text' => 'Beste '.$user->name.','.PHP_EOL.PHP_EOL
                     .'In de maand '.$labelNl.' zijn er '.$count.' werkregels geregistreerd.',
-                'body_html' => '<p>Beste '.$user->name.',</p>'
-                    .'<p>In de maand <strong>'.$labelNl.'</strong> zijn er <strong>'.$count.'</strong> werkregels geregistreerd.</p>',
+                'body_html' => '<p>Beste '.$safeName.',</p>'
+                    .'<p>In de maand <strong>'.$safeLabelNl.'</strong> zijn er <strong>'.$count.'</strong> werkregels geregistreerd.</p>',
                 'type' => 'monthly_report',
             ], $actorContext);
             $queued++;
@@ -294,7 +345,7 @@ class EmailOutboxService
             ]);
         }
 
-        if (!empty($actorContext['actor_id'])) {
+        if (! empty($actorContext['actor_id'])) {
             $actor = User::findOrFail((int) $actorContext['actor_id']);
             if ((int) $actor->organization_id !== $organizationId) {
                 throw ValidationException::withMessages([
@@ -303,7 +354,7 @@ class EmailOutboxService
             }
         }
 
-        if (!empty($input['user_id'])) {
+        if (! empty($input['user_id'])) {
             $recipientUser = User::findOrFail((int) $input['user_id']);
             if ((int) $recipientUser->organization_id !== $organizationId) {
                 throw ValidationException::withMessages([
@@ -317,7 +368,7 @@ class EmailOutboxService
     {
         $requester = User::findOrFail($requesterId);
 
-        if (!in_array((string) $requester->role, ['owner', 'manager'], true)) {
+        if (! in_array((string) $requester->role, ['owner', 'manager'], true)) {
             throw ValidationException::withMessages([
                 'requester' => 'Alleen owner of manager kan maandrapportage starten.',
             ]);
@@ -329,7 +380,7 @@ class EmailOutboxService
             ]);
         }
 
-        if (!empty($actorContext['actor_id']) && (int) $actorContext['actor_id'] !== $requesterId) {
+        if (! empty($actorContext['actor_id']) && (int) $actorContext['actor_id'] !== $requesterId) {
             throw ValidationException::withMessages([
                 'requester' => 'Requester en actor-context komen niet overeen.',
             ]);
@@ -416,24 +467,53 @@ class EmailOutboxService
     private function sendSmtp(EmailOutbox $item): void
     {
         $config = config('mail');
+        $smtpConfig = $config['mailers']['smtp'] ?? [];
 
-        $transport = new \Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport(
-            host: $config['mailers']['smtp']['host'] ?? 'localhost',
-            port: (int) ($config['mailers']['smtp']['port'] ?? 587),
+        $host = $smtpConfig['host'] ?? 'localhost';
+        $port = (int) ($smtpConfig['port'] ?? 587);
+        $encryption = $smtpConfig['encryption'] ?? $smtpConfig['scheme'] ?? null;
+
+        // Bepaal TLS-modus op basis van de encryption/scheme-instelling:
+        // - 'tls' of 'ssl': forceer TLS (implicit TLS op poort 465, STARTTLS op 587)
+        // - null/false: geen TLS (alleen voor lokale dev-omgevingen)
+        $tls = in_array($encryption, ['tls', 'ssl'], true);
+
+        $transport = new EsmtpTransport(
+            host: $host,
+            port: $port,
+            tls: $tls,
         );
 
-        $transport->setUsername($config['mailers']['smtp']['username'] ?? '');
-        $transport->setPassword($config['mailers']['smtp']['password'] ?? '');
+        // Stel een expliciete timeout in om te voorkomen dat een hangende
+        // SMTP-server de queue worker blokkeert (default is PHP's
+        // default_socket_timeout wat te lang kan zijn).
+        $transport->getStream()->setTimeout(30);
 
-        $mailer = new \Symfony\Component\Mailer\Mailer($transport);
+        $username = $smtpConfig['username'] ?? '';
+        $password = $smtpConfig['password'] ?? '';
 
-        $email = (new \Symfony\Component\Mime\Email())
-            ->from($config['from']['address'] ?? 'no-reply@lavita.nl')
+        if ($username !== '' && $username !== 'null') {
+            $transport->setUsername($username);
+        }
+        if ($password !== '' && $password !== 'null') {
+            $transport->setPassword($password);
+        }
+
+        $mailer = new Mailer($transport);
+
+        $fromAddress = $config['from']['address'] ?? 'no-reply@lavita.nl';
+        $fromName = $config['from']['name'] ?? 'LaVita Urenregistratie';
+
+        $email = (new Email)
+            ->from(new Address($fromAddress, $fromName))
             ->to($item->recipient)
             ->subject($item->subject)
-            ->text($item->body_text)
-            ->html($item->body_html);
+            ->text($item->body_text ?? '')
+            ->html($item->body_html ?? '');
 
         $mailer->send($email);
+
+        // Sluit de SMTP-verbinding expliciet om connection leaks te voorkomen
+        $transport->stop();
     }
 }

@@ -19,25 +19,28 @@ class RunEmailEvidenceIntegrityCommand extends Command
         $failOnCorruption = (bool) $this->option('fail-on-corruption');
 
         $integrityLock = Cache::lock('integrity:email-evidence:any', 3600);
-        if (!$integrityLock->get()) {
+        if (! $integrityLock->get()) {
             $this->error('Een integrity-audit is al actief voor deze scope.');
 
             return self::FAILURE;
         }
 
+        // Verkrijg de retention-lock en HOUD deze vast gedurende de hele
+        // integrity-audit. Dit voorkomt dat een retention-run start
+        // terwijl de audit loopt (race condition: retention zou records
+        // kunnen scrubben die de audit nog moet verifiëren).
         $retentionLock = Cache::lock('retention:run:any', 3600);
-        if (!$retentionLock->get()) {
+        if (! $retentionLock->get()) {
             $integrityLock->release();
             $this->error('Retention-run is actief; integrity-audit is geblokkeerd om race conditions te voorkomen.');
 
             return self::FAILURE;
         }
 
-        $retentionLock->release();
-
         try {
             $result = $auditService->run($organizationId, $outboxId, $failOnCorruption);
         } finally {
+            $retentionLock->release();
             $integrityLock->release();
         }
 
@@ -47,7 +50,7 @@ class RunEmailEvidenceIntegrityCommand extends Command
         $this->line('Scanned outbox records: '.$summary['scanned']);
         $this->line('Tampered outbox records: '.count($summary['tampered_outbox_ids']));
 
-        if (!empty($summary['tamper_detected'])) {
+        if (! empty($summary['tamper_detected'])) {
             $this->warn('Tampering detected: escalatie vereist.');
         }
 

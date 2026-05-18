@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Transitie\SystemModule;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class HealthController extends Controller
@@ -13,6 +14,7 @@ class HealthController extends Controller
         $checks = [
             'app' => 'ok',
             'database' => 'down',
+            'cache' => 'down',
         ];
 
         try {
@@ -22,14 +24,22 @@ class HealthController extends Controller
             $checks['database'] = 'down';
         }
 
-        $status = $checks['database'] === 'ok' ? 'ok' : 'degraded';
+        try {
+            Cache::store()->put('health_check', true, 5);
+            $checks['cache'] = Cache::store()->get('health_check') === true ? 'ok' : 'down';
+        } catch (\Throwable) {
+            $checks['cache'] = 'down';
+        }
+
+        $allOk = ! in_array('down', $checks, true);
+        $status = $allOk ? 'ok' : 'degraded';
 
         return response()->json([
             'status' => $status,
             'service' => 'lavita-ur-laravel-rebuild',
             'checks' => $checks,
             'timestamp' => now()->toIso8601String(),
-        ], $status === 'ok' ? 200 : 503);
+        ], $allOk ? 200 : 503);
     }
 
     public function getReady(): JsonResponse

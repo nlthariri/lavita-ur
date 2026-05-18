@@ -180,7 +180,7 @@ class EmailEvidenceIntegrityCommandTest extends TestCase
 
             return $request->url() === 'https://alerts.example.test/integrity'
                 && ($data['event'] ?? null) === 'integrity.email_evidence.tamper_detected'
-                && !empty($data['incident_id'])
+                && ! empty($data['incident_id'])
                 && in_array((int) $outbox->id, $data['tampered_outbox_ids'] ?? [], true);
         });
 

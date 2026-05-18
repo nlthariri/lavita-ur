@@ -16,12 +16,19 @@ class ObjectionsModuleContractTest extends TestCase
     use RefreshDatabase;
 
     private Organization $org;
+
     private Team $team;
+
     private User $owner;
+
     private User $manager;
+
     private User $employee;
+
     private User $boekhouder;
+
     private WorkEntry $entry;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -319,7 +326,8 @@ class ObjectionsModuleContractTest extends TestCase
         ]);
 
         $response->assertStatus(403)
-            ->assertJsonPath('message', 'Boekhouder heeft alleen read-only rapportage toegang.');
+            ->assertJsonPath('code', 'READ_ONLY_ROLE')
+            ->assertJsonPath('error', 'Boekhouder heeft alleen read-only toegang.');
     }
 
     public function test_boekhouder_cannot_review_objection(): void
@@ -338,7 +346,8 @@ class ObjectionsModuleContractTest extends TestCase
         ]);
 
         $response->assertStatus(403)
-            ->assertJsonPath('message', 'Boekhouder heeft alleen read-only rapportage toegang.');
+            ->assertJsonPath('code', 'READ_ONLY_ROLE')
+            ->assertJsonPath('error', 'Boekhouder heeft alleen read-only toegang.');
     }
 
     // ─── Regressietests: e-mail triggers en cross-org isolatie ──────────────
@@ -371,8 +380,8 @@ class ObjectionsModuleContractTest extends TestCase
 
     public function test_cross_org_manager_cannot_review_foreign_objection(): void
     {
-        $orgB = \App\Models\Organization::create(['name' => 'Org B']);
-        $managerB = \App\Models\User::create([
+        $orgB = Organization::create(['name' => 'Org B']);
+        $managerB = User::create([
             'name' => 'Manager B', 'email' => 'mgr-b@t.nl', 'password' => bcrypt('x'),
             'organization_id' => $orgB->id, 'role' => 'manager', 'is_active' => true,
         ]);
@@ -395,8 +404,8 @@ class ObjectionsModuleContractTest extends TestCase
 
     public function test_cross_org_employee_cannot_see_foreign_objections(): void
     {
-        $orgB = \App\Models\Organization::create(['name' => 'Org B']);
-        $employeeB = \App\Models\User::create([
+        $orgB = Organization::create(['name' => 'Org B']);
+        $employeeB = User::create([
             'name' => 'Emp B', 'email' => 'emp-b@t.nl', 'password' => bcrypt('x'),
             'organization_id' => $orgB->id, 'role' => 'employee', 'is_active' => true,
         ]);

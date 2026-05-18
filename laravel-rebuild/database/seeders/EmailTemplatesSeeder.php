@@ -45,6 +45,43 @@ class EmailTemplatesSeeder extends Seeder
     private const WELCOME_EMAIL_SUBJECT = 'Welkom bij LaVita Urenregistratie';
 
     /**
+     * Onderwerp van de jubileummail (Requirement 11.4).
+     */
+    private const ANNIVERSARY_SUBJECT = 'Felicitatie: {{ years }} jaar in dienst!';
+
+    /**
+     * Plain-text body van de jubileummail.
+     *
+     * Placeholders (Requirement 11.3):
+     *  - {{ full_name }}         Volledige naam van de medewerker
+     *  - {{ years }}             Aantal jaren dienstverband
+     *  - {{ employment_start }} Datum indiensttreding (dd-mm-yyyy)
+     */
+    private const ANNIVERSARY_BODY_TEXT = <<<'TXT'
+Beste collega,
+
+Wij willen {{ full_name }} van harte feliciteren met {{ years }} jaar dienstverband!
+
+{{ full_name }} is op {{ employment_start }} begonnen en viert vandaag dit mooie jubileum.
+
+Hartelijk gefeliciteerd!
+
+Met vriendelijke groet,
+LaVita Urenregistratie
+TXT;
+
+    /**
+     * HTML-body van de jubileummail.
+     */
+    private const ANNIVERSARY_BODY_HTML = <<<'HTML'
+<p>Beste collega,</p>
+<p>Wij willen <strong>{{ full_name }}</strong> van harte feliciteren met <strong>{{ years }} jaar</strong> dienstverband!</p>
+<p>{{ full_name }} is op <strong>{{ employment_start }}</strong> begonnen en viert vandaag dit mooie jubileum.</p>
+<p>Hartelijk gefeliciteerd!</p>
+<p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>
+HTML;
+
+    /**
      * Plain-text body van de welkomstmail.
      *
      * Bevat alle placeholders uit Requirement 5.3. De `team_name`-placeholder
@@ -89,7 +126,7 @@ TXT;
 HTML;
 
     /**
-     * Seed de welcome_email-template voor iedere organisatie.
+     * Seed de welcome_email- en anniversary-templates voor iedere organisatie.
      */
     public function run(): void
     {
@@ -103,6 +140,20 @@ HTML;
                     'subject_template' => self::WELCOME_EMAIL_SUBJECT,
                     'body_text_template' => self::WELCOME_EMAIL_BODY_TEXT,
                     'body_html_template' => self::WELCOME_EMAIL_BODY_HTML,
+                    'is_active' => true,
+                    'updated_by_actor_id' => null,
+                ],
+            );
+
+            EmailTemplate::updateOrCreate(
+                [
+                    'organization_id' => (int) $organization->id,
+                    'type' => 'anniversary',
+                ],
+                [
+                    'subject_template' => self::ANNIVERSARY_SUBJECT,
+                    'body_text_template' => self::ANNIVERSARY_BODY_TEXT,
+                    'body_html_template' => self::ANNIVERSARY_BODY_HTML,
                     'is_active' => true,
                     'updated_by_actor_id' => null,
                 ],

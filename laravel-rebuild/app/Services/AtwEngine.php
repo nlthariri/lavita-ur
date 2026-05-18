@@ -25,9 +25,15 @@ class AtwEngine
     private const MINIMUM_PAUSE_MINUTES = 30;
 
     /**
-     * @param array{start_at: string, end_at: string, net_minutes: int} $proposedShift
-     * @param array<int, array{id: int, start_at: string, end_at: string, net_minutes: int}> $existingShifts
-     * @param array{daily_max_minutes: int, weekly_max_minutes: int, weekly_warning_minutes: int, average_16_week_minutes: int} $policy
+     * Entry types die niet meetellen voor ATW-werktijd-totalen.
+     * Requirements: 7.8
+     */
+    private const EXCLUDED_ATW_TYPES = ['SICK', 'LEAVE', 'HOLIDAY', 'OTHER'];
+
+    /**
+     * @param  array{start_at: string, end_at: string, net_minutes: int}  $proposedShift
+     * @param  array<int, array{id: int, start_at: string, end_at: string, net_minutes: int, type?: string}>  $existingShifts
+     * @param  array{daily_max_minutes: int, weekly_max_minutes: int, weekly_warning_minutes: int, average_16_week_minutes: int}  $policy
      * @return array<int, array{type: string, severity: string, message: string, threshold_minutes: int, current_minutes: int}>
      */
     public function evaluate(array $proposedShift, array $existingShifts, array $policy): array
@@ -69,6 +75,11 @@ class AtwEngine
 
         $weeklyMinutes = $proposedNet;
         foreach ($existingShifts as $shift) {
+            // SICK/LEAVE/HOLIDAY/OTHER dragen 0 minuten bij (Req 7.8)
+            $shiftType = strtoupper((string) ($shift['type'] ?? 'WORK'));
+            if (in_array($shiftType, self::EXCLUDED_ATW_TYPES, true)) {
+                continue;
+            }
             $shiftStart = Carbon::parse($shift['start_at']);
             if ($shiftStart->gte($weekStart) && $shiftStart->lt($weekEnd)) {
                 $weeklyMinutes += (int) $shift['net_minutes'];
@@ -100,6 +111,11 @@ class AtwEngine
         $lookbackEnd = $proposedStart->copy()->endOfWeek(Carbon::SUNDAY);
         $total16Weeks = $proposedNet;
         foreach ($existingShifts as $shift) {
+            // SICK/LEAVE/HOLIDAY/OTHER dragen 0 minuten bij (Req 7.8)
+            $shiftType = strtoupper((string) ($shift['type'] ?? 'WORK'));
+            if (in_array($shiftType, self::EXCLUDED_ATW_TYPES, true)) {
+                continue;
+            }
             $shiftStart = Carbon::parse($shift['start_at']);
             if ($shiftStart->gte($lookbackStart) && $shiftStart->lte($lookbackEnd)) {
                 $total16Weeks += (int) $shift['net_minutes'];
@@ -118,6 +134,7 @@ class AtwEngine
         }
 
         // --- 4. Rustperiode ---
+        // 4a. Backward check: vind de laatste shift die VOOR de voorgestelde shift eindigt
         $previousShift = null;
         foreach ($existingShifts as $shift) {
             $shiftEnd = Carbon::parse($shift['end_at']);
@@ -137,6 +154,30 @@ class AtwEngine
                     'message' => 'Rusttijd tussen diensten is minder dan 11 uur.',
                     'threshold_minutes' => self::MINIMUM_REST_MINUTES,
                     'current_minutes' => $restMinutes,
+                ];
+            }
+        }
+
+        // 4b. Forward check: vind de eerste shift die NA de voorgestelde shift begint
+        $nextShift = null;
+        foreach ($existingShifts as $shift) {
+            $shiftStart = Carbon::parse($shift['start_at']);
+            if ($shiftStart->gte($proposedEnd)) {
+                if ($nextShift === null || $shiftStart->lt(Carbon::parse($nextShift['start_at']))) {
+                    $nextShift = $shift;
+                }
+            }
+        }
+
+        if ($nextShift !== null) {
+            $restMinutesForward = (int) $proposedEnd->diffInMinutes(Carbon::parse($nextShift['start_at']));
+            if ($restMinutesForward < self::MINIMUM_REST_MINUTES) {
+                $signals[] = [
+                    'type' => 'REST_PERIOD',
+                    'severity' => 'critical',
+                    'message' => 'Rusttijd tussen diensten is minder dan 11 uur.',
+                    'threshold_minutes' => self::MINIMUM_REST_MINUTES,
+                    'current_minutes' => $restMinutesForward,
                 ];
             }
         }

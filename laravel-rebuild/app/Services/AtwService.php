@@ -31,8 +31,7 @@ class AtwService
         private readonly AtwEngine $engine,
         private readonly EmailOutboxService $emailOutboxService,
         private readonly AuditService $auditService,
-    ) {
-    }
+    ) {}
 
     /**
      * Geef de publieke ATW-foutcode voor een AtwEngine signal-type, of `null`
@@ -81,8 +80,8 @@ class AtwService
      *
      * Requirements: 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.9
      *
-     * @param array<int, array{type?: string, severity?: string, message?: string, current_minutes?: int, threshold_minutes?: int}> $signals
-     * @param array{organization_id?: int, actor_id?: int, employee_id?: int, target_id?: int|string|null} $context
+     * @param  array<int, array{type?: string, severity?: string, message?: string, current_minutes?: int, threshold_minutes?: int}>  $signals
+     * @param  array{organization_id?: int, actor_id?: int, employee_id?: int, target_id?: int|string|null}  $context
      */
     public function throwOnCriticalSignals(array $signals, array $context = []): void
     {
@@ -143,8 +142,8 @@ class AtwService
      *
      * Requirements: 4.7
      *
-     * @param array<int, array{type?: string, current_minutes?: int, threshold_minutes?: int}> $criticalSignals
-     * @param array{organization_id?: int, actor_id?: int, employee_id?: int, target_id?: int|string|null} $context
+     * @param  array<int, array{type?: string, current_minutes?: int, threshold_minutes?: int}>  $criticalSignals
+     * @param  array{organization_id?: int, actor_id?: int, employee_id?: int, target_id?: int|string|null}  $context
      */
     private function recordBlockedSignals(array $criticalSignals, array $context): void
     {
@@ -202,12 +201,14 @@ class AtwService
         $existingShifts = WorkEntry::where('employee_id', $employee->id)
             ->where('start_at', '>=', $lookbackStart)
             ->where('start_at', '<=', $lookbackEnd)
+            ->whereNull('deleted_at')
             ->get()
             ->map(fn (WorkEntry $e) => [
                 'id' => $e->id,
                 'start_at' => $e->start_at->toIso8601String(),
                 'end_at' => $e->end_at->toIso8601String(),
                 'net_minutes' => $e->net_minutes,
+                'type' => (string) ($e->type ?? 'WORK'),
             ])->all();
 
         $proposedShift = [
@@ -241,10 +242,10 @@ class AtwService
                 'id' => $v->id,
                 'violation_type' => $v->violation_type,
                 'severity' => $v->severity,
-                'period_start' => $v->period_start instanceof \Carbon\Carbon
+                'period_start' => $v->period_start instanceof Carbon
                     ? $v->period_start->toDateString()
                     : (string) $v->period_start,
-                'period_end' => $v->period_end instanceof \Carbon\Carbon
+                'period_end' => $v->period_end instanceof Carbon
                     ? $v->period_end->toDateString()
                     : (string) $v->period_end,
                 'current_minutes' => $v->current_minutes,
@@ -301,6 +302,9 @@ class AtwService
             }
 
             foreach ($recipientMap as $recipient) {
+                $safeName = e($employee->name);
+                $safeMessage = e($signal['message'] ?? '');
+
                 $this->emailOutboxService->dispatch([
                     'idempotency_key' => 'atw-signal-'.$workEntryId.'-'.$signal['type'].'-'.$recipient->id,
                     'organization_id' => (int) $employee->organization_id,
@@ -308,7 +312,7 @@ class AtwService
                     'recipient' => (string) $recipient->email,
                     'subject' => 'ATW-signaal: '.$signal['type'],
                     'body_text' => 'ATW-signaal voor '.$employee->name.': '.$signal['message'].' Huidig: '.$signal['current_minutes'].' min, grens: '.$signal['threshold_minutes'].' min.',
-                    'body_html' => '<p>ATW-signaal voor <strong>'.$employee->name.'</strong>.</p><p>'.$signal['message'].'</p><p>Huidig: <strong>'.$signal['current_minutes'].'</strong> min, grens: <strong>'.$signal['threshold_minutes'].'</strong> min.</p>',
+                    'body_html' => '<p>ATW-signaal voor <strong>'.$safeName.'</strong>.</p><p>'.$safeMessage.'</p><p>Huidig: <strong>'.$signal['current_minutes'].'</strong> min, grens: <strong>'.$signal['threshold_minutes'].'</strong> min.</p>',
                     'type' => 'atw_'.strtolower((string) $signal['type']),
                 ], [
                     'actor_id' => (int) $registrar->id,
@@ -333,7 +337,7 @@ class AtwService
         }
 
         if ($requester->role === 'manager') {
-            if (!$requester->team_id) {
+            if (! $requester->team_id) {
                 throw ValidationException::withMessages([
                     'requester' => 'Manager moet gekoppeld zijn aan een team.',
                 ]);

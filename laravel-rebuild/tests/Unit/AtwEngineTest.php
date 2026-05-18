@@ -19,7 +19,7 @@ class AtwEngineTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->engine = new AtwEngine();
+        $this->engine = new AtwEngine;
     }
 
     public function test_no_signals_for_normal_shift(): void

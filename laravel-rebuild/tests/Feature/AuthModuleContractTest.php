@@ -3,13 +3,14 @@
 namespace Tests\Feature;
 
 use App\Models\AuthSession;
+use App\Models\MfaSecret;
 use App\Models\Organization;
 use App\Models\Team;
-use App\Models\MfaSecret;
 use App\Models\User;
 use App\Services\AuthMfaService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 class AuthModuleContractTest extends TestCase
@@ -187,7 +188,7 @@ class AuthModuleContractTest extends TestCase
             'is_active' => true,
         ]);
 
-        $token = \Illuminate\Support\Str::random(64);
+        $token = Str::random(64);
         AuthSession::query()->create([
             'user_id' => $owner->id,
             'session_token_hash' => hash('sha256', $token),
@@ -235,7 +236,7 @@ class AuthModuleContractTest extends TestCase
 
         $this->assertDatabaseHas('users', [
             'id' => $createdUserId,
-            'email' => 'new.employee@lavita.nl',
+            'email_index_hash' => hash('sha256', 'new.employee@lavita.nl'),
             'organization_id' => $org->id,
             'team_id' => $team->id,
             'role' => 'employee',
@@ -268,7 +269,8 @@ class AuthModuleContractTest extends TestCase
             'role' => 'employee',
         ])
             ->assertStatus(403)
-            ->assertJsonPath('message', 'Onvoldoende rechten voor account-aanmaak.');
+            ->assertJsonPath('code', 'READ_ONLY_ROLE')
+            ->assertJsonPath('error', 'Boekhouder heeft alleen read-only toegang.');
     }
 
     public function test_manager_cannot_create_non_employee_account(): void
@@ -306,7 +308,7 @@ class AuthModuleContractTest extends TestCase
             'is_active' => false,
         ]);
 
-        $token = \Illuminate\Support\Str::random(64);
+        $token = Str::random(64);
         AuthSession::query()->create([
             'user_id' => $owner->id,
             'session_token_hash' => hash('sha256', $token),
@@ -385,7 +387,7 @@ class AuthModuleContractTest extends TestCase
             'is_active' => true,
         ]);
 
-        $token = \Illuminate\Support\Str::random(64);
+        $token = Str::random(64);
         AuthSession::query()->create([
             'user_id' => $user->id,
             'session_token_hash' => hash('sha256', $token),
@@ -408,7 +410,7 @@ class AuthModuleContractTest extends TestCase
             'is_active' => true,
         ]);
 
-        $token = \Illuminate\Support\Str::random(64);
+        $token = Str::random(64);
         AuthSession::query()->create([
             'user_id' => $user->id,
             'session_token_hash' => hash('sha256', $token),

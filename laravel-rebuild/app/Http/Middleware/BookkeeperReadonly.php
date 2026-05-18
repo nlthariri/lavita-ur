@@ -43,10 +43,12 @@ class BookkeeperReadonly
      * Bepaalt of de HTTP-methode als read-only mag worden beschouwd.
      *
      * Strikt volgens Requirement 3.3 ("elke HTTP-methode anders dan GET")
-     * is uitsluitend `GET` toegestaan voor `boekhouder`.
+     * is uitsluitend `GET` toegestaan voor `boekhouder`. We voegen `HEAD`
+     * en `OPTIONS` toe omdat deze geen state muteren en nodig zijn voor
+     * monitoring-probes en CORS-preflight.
      */
     private function isReadMethod(Request $request): bool
     {
-        return strtoupper($request->getMethod()) === 'GET';
+        return in_array(strtoupper($request->getMethod()), ['GET', 'HEAD', 'OPTIONS'], true);
     }
 }
