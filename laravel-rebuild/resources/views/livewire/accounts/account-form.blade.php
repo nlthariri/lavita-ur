@@ -265,6 +265,120 @@
                             </p>
                         </div>
 
+                        {{-- Verlofrecht configuratie (Req 9.1, 9.2). --}}
+                        @php
+                            $annualLeaveDaysError = $errors->first('annualLeaveDays');
+                        @endphp
+                        <div class="flex flex-col gap-3">
+                            <div class="flex flex-col gap-1">
+                                <label for="account-annual-leave-days" class="text-body-sm font-medium text-ink">
+                                    Jaarlijks verlofrecht (dagen)
+                                </label>
+                                <input
+                                    id="account-annual-leave-days"
+                                    name="annualLeaveDays"
+                                    type="number"
+                                    min="0"
+                                    max="365"
+                                    step="1"
+                                    wire:model.blur="annualLeaveDays"
+                                    placeholder="Niet geconfigureerd"
+                                    @if ($annualLeaveDaysError) aria-invalid="true" aria-describedby="account-annual-leave-days-error" @endif
+                                    class="block h-10 w-full rounded-input border-2 border-hairline bg-canvas px-3 text-body-sm text-ink placeholder:text-steel focus:border-brand-green focus:outline-none focus:ring-2 focus:ring-brand-green/20"
+                                />
+                                @if ($annualLeaveDaysError)
+                                    <p
+                                        id="account-annual-leave-days-error"
+                                        class="text-body-sm text-danger"
+                                        role="alert"
+                                        aria-live="polite"
+                                    >{{ $annualLeaveDaysError }}</p>
+                                @endif
+                                <p class="text-body-sm text-steel">
+                                    Laat leeg om verlof-saldo tracking uit te schakelen. Waarde 0-365.
+                                </p>
+                            </div>
+
+                            {{-- Verlof-saldo overzicht (Req 9.5, 9.6, 9.7, 9.8, 9.10) --}}
+                            @if (! $isCreate && $leaveBalance !== null && $leaveBalance['status'] !== 'unconfigured')
+                                @php
+                                    $balanceAnnual = $leaveBalance['annual_days'] ?? 0;
+                                    $balanceTaken = $leaveBalance['taken_days'] ?? 0;
+                                    $balanceRemaining = $leaveBalance['remaining_days'] ?? 0;
+                                    $balanceStatus = $leaveBalance['status'] ?? 'ok';
+                                    $balanceBreakdown = $leaveBalance['breakdown'] ?? [];
+
+                                    $progressVariant = match ($balanceStatus) {
+                                        'danger' => 'danger',
+                                        'warning' => 'warning',
+                                        default => 'success',
+                                    };
+
+                                    $statusBadgeText = match ($balanceStatus) {
+                                        'danger' => 'Saldo op',
+                                        'warning' => 'Bijna op',
+                                        default => null,
+                                    };
+                                @endphp
+                                <div
+                                    class="rounded-card border border-hairline bg-surface p-4"
+                                    data-testid="leave-balance-overview"
+                                    aria-label="Verlof-saldo overzicht"
+                                >
+                                    <h3 class="mb-3 text-body-sm font-semibold text-ink">Verlof-saldo {{ now()->year }}</h3>
+
+                                    {{-- Saldo-details --}}
+                                    <div class="mb-3 grid grid-cols-3 gap-2 text-center">
+                                        <div class="flex flex-col">
+                                            <span class="text-heading-3 font-bold text-ink">{{ $balanceAnnual }}</span>
+                                            <span class="text-body-sm text-steel">Recht</span>
+                                        </div>
+                                        <div class="flex flex-col">
+                                            <span class="text-heading-3 font-bold text-ink">{{ number_format($balanceTaken, 1) }}</span>
+                                            <span class="text-body-sm text-steel">Opgenomen</span>
+                                        </div>
+                                        <div class="flex flex-col">
+                                            <span class="text-heading-3 font-bold {{ $balanceStatus === 'danger' ? 'text-danger' : ($balanceStatus === 'warning' ? 'text-warning' : 'text-brand-green') }}">{{ number_format($balanceRemaining, 1) }}</span>
+                                            <span class="text-body-sm text-steel">Resterend</span>
+                                        </div>
+                                    </div>
+
+                                    {{-- Progress bar --}}
+                                    <x-ui.progress
+                                        :value="$balanceTaken"
+                                        :max="$balanceAnnual > 0 ? $balanceAnnual : 1"
+                                        :variant="$progressVariant"
+                                        label="Opgenomen verlofdagen"
+                                        :showPercentage="true"
+                                    />
+
+                                    {{-- Status-badge bij waarschuwing --}}
+                                    @if ($statusBadgeText !== null)
+                                        <div class="mt-2">
+                                            <span class="inline-flex items-center rounded-button px-2 py-0.5 text-body-sm font-medium {{ $balanceStatus === 'danger' ? 'bg-danger/10 text-danger' : 'bg-warning/10 text-warning' }}">
+                                                {{ $statusBadgeText }}
+                                            </span>
+                                        </div>
+                                    @endif
+
+                                    {{-- Breakdown per verlof-type --}}
+                                    @if (count($balanceBreakdown) > 0)
+                                        <div class="mt-3 border-t border-hairline pt-2">
+                                            <p class="mb-1 text-body-sm font-medium text-steel">Uitsplitsing:</p>
+                                            <ul class="space-y-0.5 text-body-sm text-ink">
+                                                @foreach ($balanceBreakdown as $typeName => $days)
+                                                    <li class="flex justify-between">
+                                                        <span>{{ $typeName }}</span>
+                                                        <span class="font-mono text-steel">{{ number_format($days, 1) }} {{ $days == 1 ? 'dag' : 'dagen' }}</span>
+                                                    </li>
+                                                @endforeach
+                                            </ul>
+                                        </div>
+                                    @endif
+                                </div>
+                            @endif
+                        </div>
+
                         {{-- Acties --}}
                         <div class="mt-2 flex flex-col-reverse gap-3 tablet:flex-row tablet:justify-end">
                             <x-ui.button

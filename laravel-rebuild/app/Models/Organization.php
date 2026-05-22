@@ -43,4 +43,9 @@ class Organization extends Model
     {
         return $this->hasMany(WorkEntry::class);
     }
+
+    public function leaveTypes(): HasMany
+    {
+        return $this->hasMany(LeaveType::class);
+    }
 }

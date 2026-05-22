@@ -423,4 +423,294 @@ final class LeaveFormTest extends TestCase
         $html = $component->html();
         $this->assertStringContainsString('Medewerker', $html);
     }
+
+    // ─── Verlof-annulering tests (taak 13.2) ───────────────────────────
+
+    public function test_cancel_button_shown_for_pending_leave(): void
+    {
+        $this->actingAs($this->employee);
+
+        // Maak een PENDING verlofaanvraag aan
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => false,
+        ]);
+
+        $component = Livewire::test(LeaveForm::class);
+        $html = $component->html();
+
+        $this->assertStringContainsString('cancel-leave-btn-'.$entry->id, $html);
+        $this->assertStringContainsString('Annuleren', $html);
+    }
+
+    public function test_cancel_button_hidden_for_approved_leave(): void
+    {
+        $this->actingAs($this->employee);
+
+        // Maak een GOEDGEKEURD verlofaanvraag aan
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => true,
+        ]);
+
+        $component = Livewire::test(LeaveForm::class);
+        $html = $component->html();
+
+        // De annuleren-knop mag NIET getoond worden bij goedgekeurd verlof
+        $this->assertStringNotContainsString('cancel-leave-btn-'.$entry->id, $html);
+    }
+
+    public function test_confirm_cancel_opens_modal(): void
+    {
+        $this->actingAs($this->employee);
+
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => false,
+        ]);
+
+        Livewire::test(LeaveForm::class)
+            ->call('confirmCancelLeave', $entry->id)
+            ->assertSet('cancellingEntryId', $entry->id);
+    }
+
+    public function test_dismiss_cancel_modal_resets_state(): void
+    {
+        $this->actingAs($this->employee);
+
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => false,
+        ]);
+
+        Livewire::test(LeaveForm::class)
+            ->call('confirmCancelLeave', $entry->id)
+            ->assertSet('cancellingEntryId', $entry->id)
+            ->call('dismissCancelModal')
+            ->assertSet('cancellingEntryId', null);
+    }
+
+    public function test_cancel_leave_soft_deletes_pending_entry(): void
+    {
+        $this->actingAs($this->employee);
+
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => false,
+        ]);
+
+        Livewire::test(LeaveForm::class)
+            ->call('confirmCancelLeave', $entry->id)
+            ->call('cancelLeave')
+            ->assertSet('cancellingEntryId', null)
+            ->assertDispatched('toast', variant: 'success', message: 'Verlofaanvraag geannuleerd.')
+            ->assertDispatched('leave-cancelled');
+
+        // Verify soft-delete
+        $this->assertSoftDeleted('work_entries', ['id' => $entry->id]);
+    }
+
+    public function test_cancel_leave_creates_audit_event(): void
+    {
+        $this->actingAs($this->employee);
+
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => false,
+        ]);
+
+        Livewire::test(LeaveForm::class)
+            ->call('confirmCancelLeave', $entry->id)
+            ->call('cancelLeave');
+
+        // Verify audit event
+        $this->assertDatabaseHas('audit_events', [
+            'organization_id' => $this->org->id,
+            'actor_id' => $this->employee->id,
+            'action' => 'LEAVE_CANCELLED',
+            'target_type' => 'work_entry',
+            'target_id' => $entry->id,
+        ]);
+    }
+
+    public function test_cancel_approved_leave_returns_409(): void
+    {
+        $this->actingAs($this->employee);
+
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => true,
+        ]);
+
+        Livewire::test(LeaveForm::class)
+            ->call('confirmCancelLeave', $entry->id)
+            ->call('cancelLeave')
+            ->assertStatus(409);
+
+        // Entry should NOT be soft-deleted
+        $this->assertDatabaseHas('work_entries', [
+            'id' => $entry->id,
+            'deleted_at' => null,
+        ]);
+    }
+
+    public function test_cancel_leave_updates_balance(): void
+    {
+        $this->actingAs($this->employee);
+
+        // Configureer verlofrecht
+        $this->employee->update(['annual_leave_days' => 25]);
+
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => false,
+        ]);
+
+        // Bereken saldo vóór annulering — de entry is PENDING (is_finalized=false)
+        // LeaveBalanceService telt alleen is_finalized=true, dus pending entries
+        // tellen niet mee in het saldo. Na soft-delete is de entry sowieso weg.
+        $balanceService = app(\App\Services\LeaveBalanceService::class);
+        $balanceBefore = $balanceService->getBalance($this->employee->id, (int) date('Y'));
+
+        Livewire::test(LeaveForm::class)
+            ->call('confirmCancelLeave', $entry->id)
+            ->call('cancelLeave');
+
+        // Na annulering: entry is soft-deleted, dus niet meer zichtbaar
+        $this->assertSoftDeleted('work_entries', ['id' => $entry->id]);
+
+        // Saldo moet ongewijzigd zijn (pending entries tellen niet mee)
+        $balanceAfter = $balanceService->getBalance($this->employee->id, (int) date('Y'));
+        $this->assertEquals($balanceBefore['taken_days'], $balanceAfter['taken_days']);
+    }
+
+    public function test_cancel_other_users_entry_fails(): void
+    {
+        $this->actingAs($this->employee);
+
+        // Maak een entry aan voor employee2
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee2->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => false,
+        ]);
+
+        Livewire::test(LeaveForm::class)
+            ->call('confirmCancelLeave', $entry->id)
+            ->call('cancelLeave')
+            ->assertDispatched('toast', variant: 'error', message: 'Verlofaanvraag niet gevonden.');
+
+        // Entry should NOT be soft-deleted
+        $this->assertDatabaseHas('work_entries', [
+            'id' => $entry->id,
+            'deleted_at' => null,
+        ]);
+    }
+
+    public function test_view_shows_confirmation_modal_text(): void
+    {
+        $this->actingAs($this->employee);
+
+        $entry = WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => now()->addDays(5)->toDateString(),
+            'start_at' => now()->addDays(5)->setTime(9, 0),
+            'end_at' => now()->addDays(5)->setTime(14, 30),
+            'pause_minutes' => 0,
+            'net_minutes' => 330,
+            'type' => 'LEAVE',
+            'is_finalized' => false,
+        ]);
+
+        $component = Livewire::test(LeaveForm::class)
+            ->call('confirmCancelLeave', $entry->id);
+
+        $html = $component->html();
+        $this->assertStringContainsString('Weet je zeker dat je deze verlofaanvraag wilt annuleren?', $html);
+        $this->assertStringContainsString('Ja, annuleren', $html);
+        $this->assertStringContainsString('Nee, behouden', $html);
+    }
 }

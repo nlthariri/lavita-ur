@@ -170,6 +170,7 @@
                             ['label' => 'Mijn week',    'href' => '/uren/mijn-week',  'roles' => null],
                             ['label' => 'Verlof',       'href' => '/verlof',          'roles' => null],
                             ['label' => 'Verlofoverzicht', 'href' => '/verlof/overzicht', 'roles' => ['owner', 'manager']],
+                            ['label' => 'Verlofkalender', 'href' => '/verlof/kalender', 'roles' => ['owner', 'manager', 'boekhouder']],
                             ['label' => 'Bezwaren',     'href' => '/bezwaren',        'roles' => null],
                             ['label' => 'ATW',          'href' => '/atw',             'roles' => ['owner', 'manager', 'boekhouder']],
                             ['label' => 'Rapportages',  'href' => '/rapportages',     'roles' => ['owner', 'manager', 'boekhouder']],
@@ -241,7 +242,14 @@
         </footer>
     </div>
 
+    {{-- Globale toast-container (taak 1.1): luistert naar @toast.window events. --}}
+    <x-ui.toast />
+
     @livewireScripts
+
+    {{-- ApexCharts via CDN (geen npm build nodig op shared hosting) --}}
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts@3/dist/apexcharts.min.js" defer></script>
+
     @stack('scripts')
 </body>
 </html>

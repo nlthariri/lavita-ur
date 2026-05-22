@@ -21,6 +21,7 @@ class WorkEntry extends Model
         'pause_minutes',
         'net_minutes',
         'type',
+        'leave_type_id',
         'note',
         'project_id',
         'cost_center_id',
@@ -36,6 +37,7 @@ class WorkEntry extends Model
         'net_minutes' => 'integer',
         'project_id' => 'integer',
         'cost_center_id' => 'integer',
+        'leave_type_id' => 'integer',
         'deleted_at' => 'datetime',
     ];
 
@@ -67,5 +69,10 @@ class WorkEntry extends Model
     public function costCenter(): BelongsTo
     {
         return $this->belongsTo(CostCenter::class);
+    }
+
+    public function leaveType(): BelongsTo
+    {
+        return $this->belongsTo(LeaveType::class);
     }
 }

@@ -63,6 +63,7 @@ use App\Livewire\Auth\PasswordForgotForm;
 use App\Livewire\Auth\PasswordResetForm;
 use App\Livewire\Dashboard\EmployeeHome;
 use App\Livewire\Dashboard\ManagerHome;
+use App\Livewire\Hours\LeaveCalendar;
 use App\Livewire\Hours\LeaveForm;
 use App\Livewire\Hours\LeaveOverview;
 use App\Livewire\Hours\MyWeek;
@@ -74,6 +75,7 @@ use App\Livewire\Reports\Filters;
 use App\Livewire\Reports\YearExport;
 use App\Livewire\Settings\EmailTemplates;
 use App\Livewire\Settings\HolidaysManager;
+use App\Livewire\Settings\LeaveTypesManager;
 use App\Livewire\Settings\OrganizationSettings;
 use App\Livewire\Settings\ProjectsManager;
 use App\Livewire\Settings\SettingsOverview;
@@ -128,6 +130,7 @@ Route::middleware(['web'])->group(function () {
         Route::get('/instellingen/teams', TeamsManager::class)->name('settings.teams');
         Route::get('/instellingen/projecten', ProjectsManager::class)->name('settings.projects');
         Route::get('/instellingen/feestdagen', HolidaysManager::class)->name('settings.holidays');
+        Route::get('/instellingen/verlof-types', LeaveTypesManager::class)->name('settings.leave-types');
 
         // Profiel
         Route::get('/profiel', ProfilePage::class)->name('profile');
@@ -146,6 +149,7 @@ Route::middleware(['web'])->group(function () {
         // Verlof (Req 6.10)
         Route::get('/verlof', LeaveForm::class)->name('leave.index');
         Route::get('/verlof/overzicht', LeaveOverview::class)->name('leave.overview');
+        Route::get('/verlof/kalender', LeaveCalendar::class)->name('leave.calendar');
 
         // Bezwaren (Req 6.4, 6.6)
         Route::get('/bezwaren', ObjectionsList::class)->name('objections.index');
@@ -174,4 +178,94 @@ Route::middleware(['web'])->group(function () {
             return redirect('/inloggen');
         })->name('logout');
     });
+});
+
+/*
+|--------------------------------------------------------------------------
+| Tijdelijke utility-routes (VERWIJDER NA GEBRUIK)
+|--------------------------------------------------------------------------
+*/
+Route::get('/ops/clear-cache', function () {
+    if (request()->query('key') !== 'LaVita2026ClearNow') {
+        abort(403, 'Ongeldige sleutel.');
+    }
+
+    \Illuminate\Support\Facades\Artisan::call('view:clear');
+    \Illuminate\Support\Facades\Artisan::call('route:clear');
+    \Illuminate\Support\Facades\Artisan::call('config:clear');
+    \Illuminate\Support\Facades\Artisan::call('cache:clear');
+
+    return response("✅ Alle caches gewist.\n\nview:clear ✓\nroute:clear ✓\nconfig:clear ✓\ncache:clear ✓", 200, ['Content-Type' => 'text/plain']);
+});
+
+Route::get('/ops/migrate', function () {
+    if (request()->query('key') !== 'LaVita2026MigrateNow') {
+        abort(403, 'Ongeldige sleutel.');
+    }
+
+    $output = [];
+
+    // 1. leave_types tabel
+    if (!\Illuminate\Support\Facades\Schema::hasTable('leave_types')) {
+        \Illuminate\Support\Facades\Schema::create('leave_types', function (\Illuminate\Database\Schema\Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('organization_id');
+            $table->string('code', 40);
+            $table->string('name', 120);
+            $table->string('description', 500)->nullable();
+            $table->unsignedSmallInteger('max_days_per_year')->nullable();
+            $table->boolean('counts_towards_balance')->default(true);
+            $table->boolean('is_active')->default(true);
+            $table->timestamps();
+            $table->unique(['organization_id', 'code'], 'uq_leave_types_org_code');
+            $table->index(['organization_id', 'is_active'], 'idx_leave_types_org_active');
+            $table->foreign('organization_id', 'fk_leave_types_org')->references('id')->on('organizations')->onDelete('cascade');
+        });
+        $output[] = 'leave_types: AANGEMAAKT';
+    } else {
+        $output[] = 'leave_types: al aanwezig';
+    }
+
+    // 2. users.annual_leave_days
+    if (!\Illuminate\Support\Facades\Schema::hasColumn('users', 'annual_leave_days')) {
+        \Illuminate\Support\Facades\Schema::table('users', function (\Illuminate\Database\Schema\Blueprint $table) {
+            $table->unsignedSmallInteger('annual_leave_days')->nullable()->after('team_id');
+        });
+        $output[] = 'annual_leave_days: TOEGEVOEGD';
+    } else {
+        $output[] = 'annual_leave_days: al aanwezig';
+    }
+
+    // 3. work_entries.leave_type_id
+    if (!\Illuminate\Support\Facades\Schema::hasColumn('work_entries', 'leave_type_id')) {
+        \Illuminate\Support\Facades\Schema::table('work_entries', function (\Illuminate\Database\Schema\Blueprint $table) {
+            $table->unsignedBigInteger('leave_type_id')->nullable()->after('type');
+            $table->index('leave_type_id', 'idx_we_leave_type');
+            $table->foreign('leave_type_id', 'fk_we_leave_type')->references('id')->on('leave_types')->onDelete('set null');
+        });
+        $output[] = 'leave_type_id: TOEGEVOEGD';
+    } else {
+        $output[] = 'leave_type_id: al aanwezig';
+    }
+
+    // 4. Seed verlof-types
+    $orgs = \Illuminate\Support\Facades\DB::table('organizations')->get();
+    $seeded = 0;
+    $types = [
+        ['code' => 'VAKANTIE', 'name' => 'Vakantieverlof', 'counts_towards_balance' => true],
+        ['code' => 'BIJZONDER', 'name' => 'Bijzonder verlof', 'counts_towards_balance' => false],
+        ['code' => 'ONBETAALD', 'name' => 'Onbetaald verlof', 'counts_towards_balance' => false],
+        ['code' => 'OUDERSCHAP', 'name' => 'Ouderschapsverlof', 'counts_towards_balance' => false],
+    ];
+    foreach ($orgs as $org) {
+        foreach ($types as $t) {
+            if (!\Illuminate\Support\Facades\DB::table('leave_types')->where('organization_id', $org->id)->where('code', $t['code'])->exists()) {
+                \Illuminate\Support\Facades\DB::table('leave_types')->insert(['organization_id' => $org->id, 'code' => $t['code'], 'name' => $t['name'], 'counts_towards_balance' => $t['counts_towards_balance'], 'is_active' => true, 'created_at' => now(), 'updated_at' => now()]);
+                $seeded++;
+            }
+        }
+    }
+    $output[] = "seed: {$seeded} types aangemaakt";
+
+    return response("✅ Migraties voltooid.\n\n" . implode("\n", $output), 200, ['Content-Type' => 'text/plain']);
 });

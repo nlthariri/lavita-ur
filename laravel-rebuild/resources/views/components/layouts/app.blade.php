@@ -187,7 +187,14 @@
         </footer>
     </div>
 
+    {{-- Globale toast-container (taak 1.1): luistert naar @toast.window events. --}}
+    <x-ui.toast />
+
     @livewireScripts
+
+    {{-- ApexCharts via CDN (geen npm build nodig op shared hosting) --}}
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts@3/dist/apexcharts.min.js" defer></script>
+
     @stack('scripts')
 </body>
 </html>

@@ -28,6 +28,10 @@ class EmailTemplateService
         'atw_sixteen_week_average',
         'atw_rest_period',
         'anniversary',
+        'leave_approved',
+        'leave_rejected',
+        'leave_requested',
+        'leave_reminder',
     ];
 
     /**
@@ -77,6 +81,86 @@ class EmailTemplateService
                 .'<p>Wij willen <strong>{{ full_name }}</strong> van harte feliciteren met <strong>{{ years }} jaar</strong> dienstverband!</p>'
                 .'<p>{{ full_name }} is op <strong>{{ employment_start }}</strong> begonnen en viert vandaag dit mooie jubileum.</p>'
                 .'<p>Hartelijk gefeliciteerd!</p>'
+                .'<p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
+        ],
+        'leave_approved' => [
+            'subject' => 'Verlof goedgekeurd',
+            'body_text' => "Beste {{ full_name }},\n\n"
+                ."Uw verlofaanvraag is goedgekeurd.\n\n"
+                ."Details:\n"
+                ."- Datum: {{ leave_date }}\n"
+                ."- Type: {{ leave_type }}\n"
+                ."- Goedgekeurd door: {{ approved_by }}\n\n"
+                ."Met vriendelijke groet,\n"
+                .'LaVita Urenregistratie',
+            'body_html' => '<p>Beste {{ full_name }},</p>'
+                .'<p>Uw verlofaanvraag is goedgekeurd.</p>'
+                .'<p><strong>Details:</strong></p>'
+                .'<ul>'
+                .'<li>Datum: {{ leave_date }}</li>'
+                .'<li>Type: {{ leave_type }}</li>'
+                .'<li>Goedgekeurd door: {{ approved_by }}</li>'
+                .'</ul>'
+                .'<p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
+        ],
+        'leave_rejected' => [
+            'subject' => 'Verlof afgewezen',
+            'body_text' => "Beste {{ full_name }},\n\n"
+                ."Uw verlofaanvraag is helaas afgewezen.\n\n"
+                ."Details:\n"
+                ."- Datum: {{ leave_date }}\n"
+                ."- Type: {{ leave_type }}\n"
+                ."- Afgewezen door: {{ rejected_by }}\n"
+                ."- Reden: {{ reason }}\n\n"
+                ."Neem contact op met uw leidinggevende voor meer informatie.\n\n"
+                ."Met vriendelijke groet,\n"
+                .'LaVita Urenregistratie',
+            'body_html' => '<p>Beste {{ full_name }},</p>'
+                .'<p>Uw verlofaanvraag is helaas afgewezen.</p>'
+                .'<p><strong>Details:</strong></p>'
+                .'<ul>'
+                .'<li>Datum: {{ leave_date }}</li>'
+                .'<li>Type: {{ leave_type }}</li>'
+                .'<li>Afgewezen door: {{ rejected_by }}</li>'
+                .'<li>Reden: {{ reason }}</li>'
+                .'</ul>'
+                .'<p>Neem contact op met uw leidinggevende voor meer informatie.</p>'
+                .'<p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
+        ],
+        'leave_requested' => [
+            'subject' => 'Nieuwe verlofaanvraag',
+            'body_text' => "Beste manager,\n\n"
+                ."Er is een nieuwe verlofaanvraag ingediend.\n\n"
+                ."Details:\n"
+                ."- Medewerker: {{ employee_name }}\n"
+                ."- Datum: {{ leave_date }}\n"
+                ."- Type: {{ leave_type }}\n"
+                ."- Toelichting: {{ note }}\n\n"
+                ."Ga naar het verlofoverzicht om de aanvraag te beoordelen.\n\n"
+                ."Met vriendelijke groet,\n"
+                .'LaVita Urenregistratie',
+            'body_html' => '<p>Beste manager,</p>'
+                .'<p>Er is een nieuwe verlofaanvraag ingediend.</p>'
+                .'<p><strong>Details:</strong></p>'
+                .'<ul>'
+                .'<li>Medewerker: {{ employee_name }}</li>'
+                .'<li>Datum: {{ leave_date }}</li>'
+                .'<li>Type: {{ leave_type }}</li>'
+                .'<li>Toelichting: {{ note }}</li>'
+                .'</ul>'
+                .'<p>Ga naar het verlofoverzicht om de aanvraag te beoordelen.</p>'
+                .'<p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
+        ],
+        'leave_reminder' => [
+            'subject' => 'Herinnering: openstaande verlofaanvraag',
+            'body_text' => "Beste {{ manager_name }},\n\n"
+                ."Er staat een verlofaanvraag van {{ employee_name }} open sinds {{ leave_date }}.\n\n"
+                ."Ga naar het verlofoverzicht om de aanvraag te beoordelen.\n\n"
+                ."Met vriendelijke groet,\n"
+                .'LaVita Urenregistratie',
+            'body_html' => '<p>Beste {{ manager_name }},</p>'
+                .'<p>Er staat een verlofaanvraag van <strong>{{ employee_name }}</strong> open sinds <strong>{{ leave_date }}</strong>.</p>'
+                .'<p>Ga naar het verlofoverzicht om de aanvraag te beoordelen.</p>'
                 .'<p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
         ],
     ];

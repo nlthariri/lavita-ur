@@ -1,176 +1,256 @@
 {{--
-  Livewire-view — `Dashboard\ManagerHome` (taak 11.3 spec lavita-urenregistratie).
+  Livewire-view — `Dashboard\ManagerHome` (taak 4.1, 4.3 spec lavita-urenregistratie).
 
-  Bron:
-   - requirements.md 6.9  → "Managementdashboard" met aanwezigheid huidige
-       week, openstaande bezwaren teller, ATW-status samenvatting,
-       snelkoppelingen naar weekoverzicht en rapportages.
-   - requirements.md 6.13 → WCAG 2.1 AA, mobile-first, design tokens uit
-       `design.md`.
-   - requirements.md 6.14 → NL-labels, NL-bevestigingen (NFR-10).
+  Requirements: 1.1, 1.2, 1.4, 1.5, 1.6, 1.7, 1.9
 
-  Compositie:
-   - Buitenste header-card `<x-ui.card>` met `<x-slot:header>` voor titel
-     "Dashboard" + persoonlijke begroeting.
-   - Drie stat-cards in een responsive grid (1 koloms < tablet, 3 koloms
-     ≥ tablet) — elk gebruikt `<x-ui.card>` als atom en geen nieuwe atoms.
-       1. Aanwezigheid deze week (cijfer + percentage).
-       2. Openstaande bezwaren (cijfer + warning-badge wanneer > 0).
-       3. ATW-meldingen (kritiek + waarschuwing teller, elk met
-          danger/warning-badge wanneer > 0).
-   - Snelkoppelingen-sectie met `<x-ui.button>` wrappers (`as="a"`) zodat
-     de design-token-pillvorm en focus-ring worden hergebruikt.
+  Features:
+   - Persoonlijke begroeting met naam + datum (Nederlands formaat)
+   - 6 KPI-cards via `<x-ui.stat-card>` met trend-indicatoren
+   - wire:poll.30s voor auto-refresh van KPI-data
+   - Skeleton placeholders tijdens laden via `<x-ui.skeleton type="card">`
+   - Activiteit-feed: laatste 10 acties met avatar, beschrijving en relatieve tijd
+   - Snelactie-knoppen: "Uren invoeren", "Verlof goedkeuren" (badge), "Bezwaar beoordelen" (badge)
 
   Toegankelijkheid (WCAG 2.1 AA):
-   - Iedere stat-card heeft een `<h2>` met heading-2-niveau onder de
-     hoofdkop, plus een `aria-label` op het cijfer-element zodat een
-     screenreader het cijfer in context aankondigt
-     (bijv. "Aanwezig: 3 van de 10").
-   - De snelkoppelingen-lijst is een `<nav>` met `aria-label` zodat de
-     navigatie als landmark herkend wordt.
-   - Status-badges erven hun rol/contrast uit `<x-ui.status-badge>`.
+   - Stat-cards hebben aria-labels voor screenreaders
+   - Snelkoppelingen in een `<nav>` landmark
+   - Skeleton met role="status" en aria-label
+   - Activity feed items met semantische list markup
 --}}
 @php
-    /** @var array<int, array{label: string, url: string, description: string, owner_only: bool}> $quickLinks */
     $quickLinks = $this->getQuickLinks();
     $isOwner = $this->getIsOwner();
-    $presencePct = $this->getPresencePercentage();
+    $greeting = $this->getGreeting();
+    $formattedDate = $this->getFormattedDate();
 @endphp
 
-<div class="flex flex-col gap-4" data-livewire-component="dashboard.manager-home">
-    {{-- Header-card: titel + persoonlijke begroeting + organisatie. --}}
+<div
+    class="flex flex-col gap-4"
+    data-livewire-component="dashboard.manager-home"
+    wire:poll.30s="refreshKpiData"
+>
+    {{-- Header: persoonlijke begroeting + datum --}}
     <x-ui.card>
         <x-slot:header>
             <div class="flex flex-col gap-1">
-                <h1 class="text-heading-2 text-ink">Dashboard</h1>
+                <h1 class="text-heading-2 text-ink">{{ $greeting }}</h1>
                 <p class="text-body-sm text-steel">
-                    @if ($userFullName !== '' && $organizationName !== '')
-                        Welkom {{ $userFullName }} — {{ $organizationName }}
-                    @elseif ($userFullName !== '')
-                        Welkom {{ $userFullName }}
-                    @elseif ($organizationName !== '')
-                        {{ $organizationName }}
-                    @else
-                        Welkom op je dashboard.
+                    {{ $formattedDate }}
+                    @if ($organizationName !== '')
+                        — {{ $organizationName }}
                     @endif
                 </p>
             </div>
         </x-slot:header>
-
-        <p class="text-body-md text-ink">
-            Een overzicht van aanwezigheid, openstaande bezwaren en ATW-meldingen
-            voor de huidige week. Gebruik de snelkoppelingen om dieper in te zoomen.
-        </p>
     </x-ui.card>
 
-    {{-- Sectie: stat-cards (3 cards) --}}
-    <section
-        aria-label="Statistieken"
-        class="grid grid-cols-1 gap-4 tablet:grid-cols-3"
-    >
-        {{-- Card 1: aanwezigheid deze week --}}
-        <x-ui.card data-stat-card="presence">
-            <x-slot:header>
-                <h2 class="text-button-md font-semibold text-ink">
-                    Aanwezigheid deze week
-                </h2>
-            </x-slot:header>
-
-            <div class="flex flex-col gap-2">
-                <p
-                    class="font-mono text-heading-2 text-ink"
-                    aria-label="Aanwezig: {{ $presentEmployeesThisWeek }} van de {{ $totalEmployeesInScope }} medewerkers"
-                >
-                    {{ $presentEmployeesThisWeek }} / {{ $totalEmployeesInScope }}
-                </p>
-                <p class="text-body-sm text-steel">
-                    @if ($totalEmployeesInScope > 0)
-                        {{ $presencePct }}% aanwezig
-                    @else
-                        Geen medewerkers in scope.
-                    @endif
-                </p>
+    {{-- KPI-cards sectie: 6 cards in responsive grid --}}
+    <section aria-label="Kernprestatie-indicatoren">
+        @if (! $dataLoaded)
+            {{-- Skeleton placeholders tijdens laden --}}
+            <div class="grid grid-cols-1 gap-4 tablet:grid-cols-2 desktop:grid-cols-3">
+                @for ($i = 0; $i < 6; $i++)
+                    <x-ui.skeleton type="card" />
+                @endfor
             </div>
-        </x-ui.card>
+        @else
+            <div class="grid grid-cols-1 gap-4 tablet:grid-cols-2 desktop:grid-cols-3">
+                {{-- KPI 1: Totaal uren deze week --}}
+                <x-ui.stat-card
+                    title="Totaal uren deze week"
+                    :value="$this->formatMinutesToHours($kpiData['total_hours_this_week'] ?? 0)"
+                    :trend="$this->getHoursTrend()"
+                    :trend-value="$this->getHoursTrendValue()"
+                />
 
-        {{-- Card 2: openstaande bezwaren --}}
-        <x-ui.card data-stat-card="objections">
-            <x-slot:header>
-                <h2 class="text-button-md font-semibold text-ink">
-                    Openstaande bezwaren
-                </h2>
-            </x-slot:header>
+                {{-- KPI 2: Aanwezigheidspercentage --}}
+                @php
+                    $attendancePct = $kpiData['attendance_percentage'] ?? 0;
+                    $attendanceTrend = $attendancePct >= 80 ? 'up' : ($attendancePct >= 50 ? 'neutral' : 'down');
+                @endphp
+                <x-ui.stat-card
+                    title="Aanwezigheid"
+                    :value="$attendancePct . '%'"
+                    :trend="$attendanceTrend"
+                    trend-value="deze week"
+                />
 
-            <div class="flex flex-col gap-2">
-                <p
-                    class="font-mono text-heading-2 text-ink"
-                    aria-label="Openstaande bezwaren: {{ $openObjectionsCount }}"
-                >
-                    {{ $openObjectionsCount }}
-                </p>
-                @if ($openObjectionsCount > 0)
-                    <x-ui.status-badge variant="warning" data-severity="warning" icon>
-                        Actie vereist
-                    </x-ui.status-badge>
-                    <p class="text-body-sm text-steel">
-                        Beoordeel openstaande bezwaren in de bezwarenlijst.
-                    </p>
-                @else
-                    <x-ui.status-badge variant="success" data-severity="ok">
-                        Geen openstaande bezwaren
-                    </x-ui.status-badge>
-                @endif
+                {{-- KPI 3: Openstaande verlofaanvragen --}}
+                @php
+                    $pendingLeave = $kpiData['pending_leave_count'] ?? 0;
+                    $leaveTrend = $pendingLeave > 0 ? 'down' : 'neutral';
+                @endphp
+                <x-ui.stat-card
+                    title="Verlofaanvragen"
+                    :value="(string) $pendingLeave"
+                    :trend="$leaveTrend"
+                    :trend-value="$pendingLeave > 0 ? 'openstaand' : 'geen openstaand'"
+                />
+
+                {{-- KPI 4: ATW-meldingen (critical + warning) --}}
+                @php
+                    $atwCritical = $kpiData['atw_critical_count'] ?? 0;
+                    $atwWarning = $kpiData['atw_warning_count'] ?? 0;
+                    $atwTotal = $atwCritical + $atwWarning;
+                    $atwTrend = $atwCritical > 0 ? 'down' : ($atwWarning > 0 ? 'neutral' : 'up');
+                    $atwTrendValue = $atwCritical > 0
+                        ? $atwCritical . ' kritiek'
+                        : ($atwWarning > 0 ? $atwWarning . ' waarschuwing' : 'geen meldingen');
+                @endphp
+                <x-ui.stat-card
+                    title="ATW-meldingen"
+                    :value="(string) $atwTotal"
+                    :trend="$atwTrend"
+                    :trend-value="$atwTrendValue"
+                />
+
+                {{-- KPI 5: Openstaande bezwaren --}}
+                @php
+                    $objections = $kpiData['open_objections_count'] ?? 0;
+                    $objectionsTrend = $objections > 0 ? 'down' : 'up';
+                    $objectionsTrendValue = $objections > 0 ? 'actie vereist' : 'geen openstaand';
+                @endphp
+                <x-ui.stat-card
+                    title="Bezwaren"
+                    :value="(string) $objections"
+                    :trend="$objectionsTrend"
+                    :trend-value="$objectionsTrendValue"
+                />
+
+                {{-- KPI 6: Ziekteverzuim --}}
+                @php
+                    $sickPct = $kpiData['sick_percentage'] ?? 0.0;
+                    $sickTrend = $sickPct > 5 ? 'down' : ($sickPct > 0 ? 'neutral' : 'up');
+                    $sickTrendValue = $sickPct > 0 ? 'deze week' : 'geen verzuim';
+                @endphp
+                <x-ui.stat-card
+                    title="Ziekteverzuim"
+                    :value="number_format($sickPct, 1) . '%'"
+                    :trend="$sickTrend"
+                    :trend-value="$sickTrendValue"
+                />
             </div>
-        </x-ui.card>
+        @endif
+    </section>
 
-        {{-- Card 3: ATW-meldingen (critical + warning samen) --}}
-        <x-ui.card data-stat-card="atw">
+    {{-- Sectie: Staafgrafiek uren per dag (Requirements 1.3, 1.10) --}}
+    {{-- Lazy-loaded via apart Livewire-component met #[Lazy] attribute --}}
+    <livewire:dashboard.manager-week-chart />
+
+    {{-- Sectie: snelactie-knoppen (Requirement 1.5) --}}
+    <section aria-label="Snelacties">
+        <x-ui.card>
             <x-slot:header>
-                <h2 class="text-button-md font-semibold text-ink">
-                    ATW-meldingen
-                </h2>
+                <h2 class="text-button-md font-semibold text-ink">Snelacties</h2>
             </x-slot:header>
 
-            <div class="flex flex-col gap-2">
-                <div class="flex flex-wrap items-baseline gap-3">
-                    <p
-                        class="font-mono text-heading-2 text-ink"
-                        aria-label="Kritieke ATW-meldingen: {{ $atwCriticalCount }}"
+            <nav aria-label="Snelacties-navigatie">
+                <div class="flex flex-wrap gap-3">
+                    {{-- Uren invoeren --}}
+                    <x-ui.button
+                        as="a"
+                        variant="primary"
+                        href="/uren/week"
+                        data-quick-action="uren-invoeren"
+                        aria-label="Uren invoeren"
                     >
-                        {{ $atwCriticalCount }}
-                    </p>
-                    <span class="text-body-sm text-steel">kritiek</span>
-                    <p
-                        class="font-mono text-heading-2 text-ink"
-                        aria-label="ATW-waarschuwingen: {{ $atwWarningCount }}"
-                    >
-                        {{ $atwWarningCount }}
-                    </p>
-                    <span class="text-body-sm text-steel">waarschuwing</span>
-                </div>
+                        Uren invoeren
+                    </x-ui.button>
 
-                <div class="flex flex-wrap gap-2">
-                    @if ($atwCriticalCount > 0)
-                        <x-ui.status-badge variant="danger" data-severity="critical" icon>
-                            {{ $atwCriticalCount }} kritiek
-                        </x-ui.status-badge>
-                    @endif
-                    @if ($atwWarningCount > 0)
-                        <x-ui.status-badge variant="warning" data-severity="warning" icon>
-                            {{ $atwWarningCount }} waarschuwing
-                        </x-ui.status-badge>
-                    @endif
-                    @if ($atwCriticalCount === 0 && $atwWarningCount === 0)
-                        <x-ui.status-badge variant="success" data-severity="ok">
-                            Geen ATW-meldingen
-                        </x-ui.status-badge>
-                    @endif
+                    {{-- Verlof goedkeuren (met badge) --}}
+                    <x-ui.button
+                        as="a"
+                        variant="secondary"
+                        href="/verlof"
+                        data-quick-action="verlof-goedkeuren"
+                        aria-label="Verlof goedkeuren — {{ $kpiData['pending_leave_count'] ?? 0 }} openstaand"
+                    >
+                        <span class="flex items-center gap-2">
+                            Verlof goedkeuren
+                            @if (($kpiData['pending_leave_count'] ?? 0) > 0)
+                                <span
+                                    class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-danger px-1.5 text-xs font-bold text-white"
+                                    aria-hidden="true"
+                                >
+                                    {{ $kpiData['pending_leave_count'] }}
+                                </span>
+                            @endif
+                        </span>
+                    </x-ui.button>
+
+                    {{-- Bezwaar beoordelen (met badge) --}}
+                    <x-ui.button
+                        as="a"
+                        variant="secondary"
+                        href="/bezwaren"
+                        data-quick-action="bezwaar-beoordelen"
+                        aria-label="Bezwaar beoordelen — {{ $kpiData['open_objections_count'] ?? 0 }} openstaand"
+                    >
+                        <span class="flex items-center gap-2">
+                            Bezwaar beoordelen
+                            @if (($kpiData['open_objections_count'] ?? 0) > 0)
+                                <span
+                                    class="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-warning px-1.5 text-xs font-bold text-white"
+                                    aria-hidden="true"
+                                >
+                                    {{ $kpiData['open_objections_count'] }}
+                                </span>
+                            @endif
+                        </span>
+                    </x-ui.button>
                 </div>
-            </div>
+            </nav>
         </x-ui.card>
     </section>
 
-    {{-- Sectie: snelkoppelingen --}}
+    {{-- Sectie: activiteit-feed (Requirement 1.4) --}}
+    <section aria-label="Recente activiteit">
+        <x-ui.card>
+            <x-slot:header>
+                <h2 class="text-button-md font-semibold text-ink">Recente activiteit</h2>
+            </x-slot:header>
+
+            @if (! $dataLoaded)
+                {{-- Skeleton placeholders voor activity feed --}}
+                <div class="flex flex-col gap-4">
+                    @for ($i = 0; $i < 5; $i++)
+                        <div class="flex items-center gap-3">
+                            <x-ui.skeleton type="avatar" />
+                            <div class="flex-1">
+                                <x-ui.skeleton type="text" :lines="1" />
+                            </div>
+                        </div>
+                    @endfor
+                </div>
+            @elseif (empty($kpiData['activity_feed']))
+                <p class="text-body-sm text-steel">Geen recente activiteit beschikbaar.</p>
+            @else
+                <ul class="flex flex-col divide-y divide-hairline" role="list">
+                    @foreach ($kpiData['activity_feed'] as $activity)
+                        <li class="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
+                            <x-ui.avatar
+                                :name="$activity['actor_name']"
+                                size="sm"
+                            />
+                            <div class="flex flex-1 flex-col gap-0.5 min-w-0">
+                                <p class="text-body-sm text-ink truncate">
+                                    {{ $activity['description'] }}
+                                </p>
+                                <time
+                                    class="text-body-sm text-steel"
+                                    datetime="{{ $activity['created_at'] }}"
+                                >
+                                    {{ $this->formatRelativeTime($activity['created_at']) }}
+                                </time>
+                            </div>
+                        </li>
+                    @endforeach
+                </ul>
+            @endif
+        </x-ui.card>
+    </section>
+
+    {{-- Sectie: overige snelkoppelingen --}}
     <section aria-label="Snelkoppelingen">
         <x-ui.card>
             <x-slot:header>

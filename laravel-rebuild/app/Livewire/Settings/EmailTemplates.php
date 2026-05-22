@@ -77,6 +77,10 @@ final class EmailTemplates extends Component
         'pending_input_reminder',
         'monthly_report',
         'anniversary',
+        'leave_approved',
+        'leave_rejected',
+        'leave_requested',
+        'leave_reminder',
     ];
 
     /**
@@ -94,6 +98,10 @@ final class EmailTemplates extends Component
         'pending_input_reminder' => 'Herinnering openstaande invoer',
         'monthly_report' => 'Maandrapportage',
         'anniversary' => 'Jubileum',
+        'leave_approved' => 'Verlof goedgekeurd',
+        'leave_rejected' => 'Verlof afgewezen',
+        'leave_requested' => 'Nieuwe verlofaanvraag',
+        'leave_reminder' => 'Herinnering verlofaanvraag',
     ];
 
     /**

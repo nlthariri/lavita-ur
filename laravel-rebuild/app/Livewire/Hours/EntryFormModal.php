@@ -5,10 +5,13 @@ declare(strict_types=1);
 namespace App\Livewire\Hours;
 
 use App\Models\User;
+use App\Models\WorkEntry;
 use App\Services\AtwService;
 use App\Services\CostCentersService;
+use App\Services\HolidaysService;
 use App\Services\ProjectsService;
 use App\Services\WorkEntriesService;
+use Carbon\Carbon;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
@@ -95,6 +98,13 @@ final class EntryFormModal extends Component
      * naar het open-event, zonder backdrop of formulier in de DOM.
      */
     public bool $isOpen = false;
+
+    /**
+     * ID van de bestaande werkregel bij bewerken. `null` = aanmaakmodus.
+     * Wordt gevuld door {@see openModal()} wanneer het event een `entryId`
+     * bevat (klik op een gevulde cel in het weekoverzicht).
+     */
+    public ?int $entryId = null;
 
     /**
      * Medewerker-id van wie de werkregel is. Wordt gevuld door
@@ -265,6 +275,15 @@ final class EntryFormModal extends Component
     public bool $isSubmitting = false;
 
     /**
+     * Slimme defaults: placeholder-tekst op basis van de vorige werkdag.
+     * Formaat: "Vorige dag: HH:MM - HH:MM" of null als er geen vorige
+     * werkdag-entry is gevonden.
+     *
+     * Requirements: 6.2
+     */
+    public ?string $previousDayPlaceholder = null;
+
+    /**
      * Default-waarden voor alle invoer-velden, zodat we ze in
      * {@see openModal()} en {@see closeModal()} consistent kunnen
      * herstellen. Per kolom is dit identiek aan de class-property-default.
@@ -272,6 +291,7 @@ final class EntryFormModal extends Component
      * @var array<string, mixed>
      */
     private const FIELD_DEFAULTS = [
+        'entryId' => null,
         'startTime' => '08:00',
         'endTime' => '17:00',
         'pauseMinutes' => 30,
@@ -280,6 +300,7 @@ final class EntryFormModal extends Component
         'costCenterId' => null,
         'note' => '',
         'atwResult' => null,
+        'previousDayPlaceholder' => null,
     ];
 
     /**
@@ -291,14 +312,23 @@ final class EntryFormModal extends Component
      * toont.
      */
     #[On('open-entry-form-modal')]
-    public function openModal(int $employeeId, string $entryDate): void
+    public function openModal(int $employeeId, string $entryDate, ?int $entryId = null): void
     {
         $this->resetFieldsToDefaults();
         $this->resetErrorBag();
 
         $this->employeeId = $employeeId;
         $this->entryDate = $entryDate;
+        $this->entryId = $entryId;
         $this->isOpen = true;
+
+        // Edit-modus: laad bestaande entry-data in de formuliervelden.
+        if ($entryId !== null) {
+            $this->loadEntryData($entryId);
+        } else {
+            // Slimme defaults: zoek de vorige werkdag-entry voor deze medewerker.
+            $this->previousDayPlaceholder = $this->loadPreviousDayPlaceholder($employeeId, $entryDate);
+        }
     }
 
     /**
@@ -311,9 +341,18 @@ final class EntryFormModal extends Component
     {
         $this->isOpen = false;
         $this->employeeId = null;
+        $this->entryId = null;
         $this->entryDate = '';
         $this->resetFieldsToDefaults();
         $this->resetErrorBag();
+    }
+
+    /**
+     * Geeft aan of de modal in bewerkingsmodus staat (bestaande entry).
+     */
+    public function getIsEditModeProperty(): bool
+    {
+        return $this->entryId !== null;
     }
 
     /**
@@ -487,7 +526,13 @@ final class EntryFormModal extends Component
             }
 
             try {
-                $workEntriesService->create($this->buildCreatePayload(), (int) $actor->id);
+                if ($this->entryId !== null) {
+                    // Edit-modus: update bestaande entry.
+                    $workEntriesService->update($this->entryId, $this->buildCreatePayload(), (int) $actor->id);
+                } else {
+                    // Aanmaakmodus: maak nieuwe entry.
+                    $workEntriesService->create($this->buildCreatePayload(), (int) $actor->id);
+                }
             } catch (ValidationException $e) {
                 $this->mapServiceErrors($e);
 
@@ -504,12 +549,58 @@ final class EntryFormModal extends Component
                 entryDate: $this->entryDate,
             );
 
+            // Toast (success) — Req 6.7
+            $toastMessage = $this->entryId !== null
+                ? 'Werkregel bijgewerkt'
+                : 'Werkregel opgeslagen';
+            $this->dispatch('toast', variant: 'success', message: $toastMessage);
+
             $this->closeModal();
 
             return null;
         } finally {
             $this->isSubmitting = false;
         }
+    }
+
+    /**
+     * Verwijder de bestaande werkregel. Alleen beschikbaar in edit-modus.
+     * Roept `WorkEntriesService::delete()` aan en dispatcht toast +
+     * entry-saved event zodat de week-tabel kan refreshen.
+     */
+    public function delete(WorkEntriesService $workEntriesService): void
+    {
+        if ($this->entryId === null) {
+            return;
+        }
+
+        /** @var User|null $actor */
+        $actor = Auth::user();
+        if ($actor === null) {
+            abort(403, 'Geen toegang.');
+        }
+
+        try {
+            $workEntriesService->delete($this->entryId, (int) $actor->id);
+        } catch (ValidationException $e) {
+            $this->mapServiceErrors($e);
+
+            return;
+        } catch (Throwable $e) {
+            $this->addError('atw', 'Kon de werkregel niet verwijderen. Probeer opnieuw.');
+
+            return;
+        }
+
+        $this->dispatch(
+            'entry-saved',
+            employeeId: $this->employeeId,
+            entryDate: $this->entryDate,
+        );
+
+        $this->dispatch('toast', variant: 'success', message: 'Werkregel verwijderd');
+
+        $this->closeModal();
     }
 
     /**
@@ -635,6 +726,112 @@ final class EntryFormModal extends Component
 
             $this->addError($target, (string) $first);
         }
+    }
+
+    /**
+     * Laad de bestaande entry-data in de formuliervelden voor edit-modus.
+     * Haalt de werkregel op uit de database en vult de properties.
+     */
+    private function loadEntryData(int $entryId): void
+    {
+        $entry = WorkEntry::query()
+            ->where('id', $entryId)
+            ->whereNull('deleted_at')
+            ->first();
+
+        if ($entry === null) {
+            // Entry niet gevonden of verwijderd — val terug naar aanmaakmodus.
+            $this->entryId = null;
+
+            return;
+        }
+
+        $this->employeeId = (int) $entry->employee_id;
+        $this->entryDate = $entry->entry_date instanceof Carbon
+            ? $entry->entry_date->toDateString()
+            : (string) $entry->entry_date;
+        $this->type = strtoupper((string) $entry->type);
+        $this->pauseMinutes = (int) $entry->pause_minutes;
+        $this->note = (string) ($entry->note ?? '');
+        $this->projectId = $entry->project_id !== null ? (int) $entry->project_id : null;
+        $this->costCenterId = $entry->cost_center_id !== null ? (int) $entry->cost_center_id : null;
+
+        // Tijden converteren van UTC naar Europe/Amsterdam voor weergave.
+        if ($entry->start_at instanceof Carbon) {
+            $this->startTime = $entry->start_at->copy()->setTimezone('Europe/Amsterdam')->format('H:i');
+        } else {
+            $this->startTime = Carbon::parse($entry->start_at)->setTimezone('Europe/Amsterdam')->format('H:i');
+        }
+
+        if ($entry->end_at instanceof Carbon) {
+            $this->endTime = $entry->end_at->copy()->setTimezone('Europe/Amsterdam')->format('H:i');
+        } else {
+            $this->endTime = Carbon::parse($entry->end_at)->setTimezone('Europe/Amsterdam')->format('H:i');
+        }
+    }
+
+    /**
+     * Zoek de vorige werkdag (ma-vr, exclusief feestdagen) en retourneer
+     * de placeholder-tekst als de medewerker op die dag een WORK-entry had.
+     *
+     * Formaat: "Vorige dag: HH:MM - HH:MM"
+     * Retourneert null als er geen vorige werkdag-entry is.
+     *
+     * Requirements: 6.2
+     */
+    private function loadPreviousDayPlaceholder(int $employeeId, string $entryDate): ?string
+    {
+        try {
+            $date = Carbon::parse($entryDate);
+        } catch (Throwable) {
+            return null;
+        }
+
+        // Zoek de vorige werkdag (max 7 dagen terug om feestdagen/weekenden te overbruggen).
+        $holidaysService = app(HolidaysService::class);
+        $holidays = collect($holidaysService->computeNlHolidaysForYear($date->year))
+            ->pluck('date')
+            ->toArray();
+
+        $previousWorkday = null;
+        $candidate = $date->copy()->subDay();
+        $maxAttempts = 7;
+
+        while ($maxAttempts > 0) {
+            // Werkdag = ma-vr en geen feestdag
+            if ($candidate->isWeekday() && ! in_array($candidate->format('Y-m-d'), $holidays, true)) {
+                $previousWorkday = $candidate->format('Y-m-d');
+                break;
+            }
+            $candidate->subDay();
+            $maxAttempts--;
+        }
+
+        if ($previousWorkday === null) {
+            return null;
+        }
+
+        // Zoek de meest recente WORK-entry op die dag voor deze medewerker.
+        $entry = WorkEntry::query()
+            ->where('employee_id', $employeeId)
+            ->where('type', 'WORK')
+            ->whereDate('entry_date', $previousWorkday)
+            ->whereNull('deleted_at')
+            ->orderByDesc('created_at')
+            ->first(['start_at', 'end_at']);
+
+        if ($entry === null) {
+            return null;
+        }
+
+        $start = $entry->start_at instanceof Carbon
+            ? $entry->start_at->format('H:i')
+            : Carbon::parse($entry->start_at)->format('H:i');
+        $end = $entry->end_at instanceof Carbon
+            ? $entry->end_at->format('H:i')
+            : Carbon::parse($entry->end_at)->format('H:i');
+
+        return "Vorige dag: {$start} - {$end}";
     }
 
     /**

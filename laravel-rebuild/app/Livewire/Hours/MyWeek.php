@@ -11,6 +11,7 @@ use App\Models\WorkEntry;
 use Carbon\Carbon;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
 use Livewire\Component;
@@ -97,6 +98,18 @@ final class MyWeek extends Component
     public string $employeeFullName = '';
 
     /**
+     * Contractminuten per week (nullable). Wordt gebruikt voor de
+     * vergelijking weektotaal vs contracturen bovenaan de pagina.
+     */
+    public ?int $contractMinutesPerWeek = null;
+
+    /**
+     * ID van de momenteel uitgeklapte werkregel (detailpaneel).
+     * Null = geen paneel open.
+     */
+    public ?int $expandedEntryId = null;
+
+    /**
      * Mount-fase.
      *
      *  1. Resolve current user via de `Auth`-facade. Geen user → 403.
@@ -127,6 +140,9 @@ final class MyWeek extends Component
 
         $this->employeeFullName = (string) ($user->full_name ?? $user->name ?? '');
 
+        // Contracturen ophalen (nullable — verberg vergelijking als null)
+        $this->contractMinutesPerWeek = $this->resolveContractMinutes($user);
+
         // Maandag van vandaag, expliciet in Europe/Amsterdam zodat de
         // navigatie consistent met de Nederlandse weekindeling werkt
         // (ook bij DST-overgangen rond 02:00 's nachts).
@@ -144,6 +160,7 @@ final class MyWeek extends Component
             ->subDays(7)
             ->toDateString();
         $this->cachedEntriesGroupedByDay = null;
+        $this->expandedEntryId = null;
     }
 
     /**
@@ -155,6 +172,7 @@ final class MyWeek extends Component
             ->addDays(7)
             ->toDateString();
         $this->cachedEntriesGroupedByDay = null;
+        $this->expandedEntryId = null;
     }
 
     /**
@@ -166,6 +184,7 @@ final class MyWeek extends Component
             ->startOfWeek(Carbon::MONDAY)
             ->toDateString();
         $this->cachedEntriesGroupedByDay = null;
+        $this->expandedEntryId = null;
     }
 
     /**
@@ -290,10 +309,12 @@ final class MyWeek extends Component
                 'start_time' => $startTime,
                 'end_time' => $endTime,
                 'net_minutes' => (int) $entry->net_minutes,
+                'pause_minutes' => (int) ($entry->pause_minutes ?? 0),
                 'type' => (string) $entry->type,
                 'is_finalized' => (bool) $entry->is_finalized,
                 'has_open_objection' => isset($openObjectionEntryIds[$entryId]),
                 'note' => (string) ($entry->note ?? ''),
+                'project' => (string) ($entry->project ?? ''),
             ];
         }
 
@@ -315,6 +336,146 @@ final class MyWeek extends Component
         }
 
         return $total;
+    }
+
+    /**
+     * Toggle het uitklapbare detailpaneel voor een werkregel.
+     * Requirement 7.8: klik op balk → uitklapbaar detailpaneel.
+     */
+    public function toggleDetail(int $entryId): void
+    {
+        $this->expandedEntryId = $this->expandedEntryId === $entryId ? null : $entryId;
+    }
+
+    /**
+     * Haal het weektotaal op (som netto-minuten van alle entries in de week).
+     * Requirement 7.3: weektotaal bovenaan.
+     */
+    public function getWeekTotalMinutes(): int
+    {
+        $grouped = $this->getEntriesGroupedByDay();
+        $total = 0;
+        foreach ($grouped as $entries) {
+            foreach ($entries as $entry) {
+                $total += (int) ($entry['net_minutes'] ?? 0);
+            }
+        }
+
+        return $total;
+    }
+
+    /**
+     * Haal bezwaar-status op per werkregel-id.
+     * Retourneert: 'OPEN', 'APPROVED', 'REJECTED' of null (geen bezwaar).
+     * Requirement 7.4: bezwaar-icoon naast balk.
+     *
+     * @return array<int, string|null>
+     */
+    public function getObjectionStatuses(): array
+    {
+        $grouped = $this->getEntriesGroupedByDay();
+        $entryIds = [];
+        foreach ($grouped as $entries) {
+            foreach ($entries as $entry) {
+                $entryIds[] = (int) $entry['id'];
+            }
+        }
+
+        if ($entryIds === []) {
+            return [];
+        }
+
+        $objections = Objection::query()
+            ->whereIn('work_entry_id', $entryIds)
+            ->orderBy('submitted_at', 'desc')
+            ->get(['work_entry_id', 'status']);
+
+        $statuses = [];
+        foreach ($objections as $objection) {
+            $weid = (int) $objection->work_entry_id;
+            // Neem de meest recente status (eerste in desc-volgorde)
+            if (! isset($statuses[$weid])) {
+                $statuses[$weid] = (string) $objection->status;
+            }
+        }
+
+        return $statuses;
+    }
+
+    /**
+     * Bereken de tijdlijn-positie (left% en width%) voor een werkregel.
+     * Bereik: 06:00 (360 min) tot 22:00 (1320 min) = 960 minuten totaal.
+     * Formule: left% = (start_minutes - 360) / 960 × 100
+     *          width% = duration / 960 × 100
+     * Requirement 7.1: horizontale tijdlijnbalk.
+     *
+     * @return array{left: float, width: float}
+     */
+    public static function calculateTimelinePosition(string $startTime, string $endTime): array
+    {
+        $startParts = explode(':', $startTime);
+        $endParts = explode(':', $endTime);
+
+        $startMinutes = ((int) $startParts[0]) * 60 + ((int) ($startParts[1] ?? 0));
+        $endMinutes = ((int) $endParts[0]) * 60 + ((int) ($endParts[1] ?? 0));
+
+        // Clamp to timeline range 06:00-22:00
+        $timelineStart = 360; // 06:00
+        $timelineEnd = 1320;  // 22:00
+        $timelineRange = 960; // 22:00 - 06:00
+
+        $startMinutes = max($timelineStart, min($timelineEnd, $startMinutes));
+        $endMinutes = max($timelineStart, min($timelineEnd, $endMinutes));
+
+        $duration = max(0, $endMinutes - $startMinutes);
+
+        $left = (($startMinutes - $timelineStart) / $timelineRange) * 100;
+        $width = ($duration / $timelineRange) * 100;
+
+        // Minimum width for visibility
+        if ($width > 0 && $width < 2) {
+            $width = 2;
+        }
+
+        return ['left' => round($left, 2), 'width' => round($width, 2)];
+    }
+
+    /**
+     * Geeft de tijdlijn-balk-kleur (Tailwind class) voor een type.
+     * Requirement 7.2: Color_Coding op de tijdlijnbalk.
+     */
+    public static function getTimelineBarColor(string $type): string
+    {
+        return match ($type) {
+            'WORK' => 'bg-brand-green',
+            'SICK' => 'bg-danger',
+            'LEAVE' => 'bg-blue-500',
+            'HOLIDAY' => 'bg-purple-500',
+            default => 'bg-steel',
+        };
+    }
+
+    /**
+     * Resolve contracturen per week van de gebruiker.
+     * Retourneert null als niet geconfigureerd (kolom bestaat niet of waarde is null).
+     */
+    private function resolveContractMinutes(?User $user): ?int
+    {
+        if ($user === null) {
+            return null;
+        }
+
+        try {
+            if (! Schema::hasColumn('users', 'contract_hours_per_week')) {
+                return null;
+            }
+
+            $value = $user->contract_hours_per_week;
+
+            return $value !== null ? (int) $value * 60 : null;
+        } catch (\Exception) {
+            return null;
+        }
     }
 
     /**

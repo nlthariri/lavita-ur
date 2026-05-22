@@ -9,6 +9,7 @@ use App\Models\Team;
 use App\Models\User;
 use App\Services\AccountProvisioningService;
 use App\Services\AuditService;
+use App\Services\LeaveBalanceService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
@@ -195,6 +196,32 @@ final class AccountForm extends Component
     public bool $emailRemindersOptIn = true;
 
     /**
+     * Jaarlijks verlofrecht in dagen (`users.annual_leave_days`).
+     * Nullable integer, min:0, max:365. Alleen instelbaar door
+     * owner/manager. Requirement 9.1, 9.2.
+     */
+    #[Validate(
+        rule: 'nullable|integer|min:0|max:365',
+        message: [
+            'annualLeaveDays.integer' => 'Verlofrecht moet een geheel getal zijn.',
+            'annualLeaveDays.min' => 'Verlofrecht moet minimaal 0 dagen zijn.',
+            'annualLeaveDays.max' => 'Verlofrecht mag maximaal 365 dagen zijn.',
+        ],
+        attribute: ['annualLeaveDays' => 'verlofrecht'],
+        translate: false,
+    )]
+    public ?int $annualLeaveDays = null;
+
+    /**
+     * Verlof-saldo gegevens voor de medewerker die wordt bewerkt.
+     * Wordt gevuld in edit-modus via LeaveBalanceService.
+     * Bevat: annual_days, taken_days, remaining_days, status, breakdown.
+     *
+     * @var array<string, mixed>|null
+     */
+    public ?array $leaveBalance = null;
+
+    /**
      * Indiensttreding (`users.employment_start`). Optioneel,
      * `Y-m-d`-formaat.
      */
@@ -244,6 +271,7 @@ final class AccountForm extends Component
         'teamId' => null,
         'isActive' => true,
         'emailRemindersOptIn' => true,
+        'annualLeaveDays' => null,
         'employmentStart' => null,
         'employmentEnd' => null,
     ];
@@ -305,12 +333,19 @@ final class AccountForm extends Component
             $this->teamId = $target->team_id !== null ? (int) $target->team_id : null;
             $this->isActive = (bool) $target->is_active;
             $this->emailRemindersOptIn = (bool) ($target->email_reminders_opt_in ?? true);
+            $this->annualLeaveDays = $target->annual_leave_days !== null
+                ? (int) $target->annual_leave_days
+                : null;
             $this->employmentStart = $target->employment_start !== null
                 ? Carbon::parse((string) $target->employment_start)->toDateString()
                 : null;
             $this->employmentEnd = $target->employment_end !== null
                 ? Carbon::parse((string) $target->employment_end)->toDateString()
                 : null;
+
+            // Laad verlof-saldo als annual_leave_days geconfigureerd is (Req 9.10)
+            $this->leaveBalance = app(LeaveBalanceService::class)
+                ->getBalance((int) $target->id, (int) now()->year);
         }
 
         $this->isOpen = true;
@@ -479,9 +514,17 @@ final class AccountForm extends Component
             'role' => $target->role,
             'team_id' => $target->team_id,
             'is_active' => $target->is_active,
+            'annual_leave_days' => $target->annual_leave_days,
             'employment_start' => $target->employment_start?->toDateString(),
             'employment_end' => $target->employment_end?->toDateString(),
         ];
+
+        // Detecteer of annual_leave_days wijzigt voor apart audit-event (Req 9.2)
+        $previousAnnualLeaveDays = $target->annual_leave_days !== null
+            ? (int) $target->annual_leave_days
+            : null;
+        $newAnnualLeaveDays = $this->annualLeaveDays;
+        $leaveAllowanceChanged = $previousAnnualLeaveDays !== $newAnnualLeaveDays;
 
         $target->update([
             'name' => trim($this->name),
@@ -491,6 +534,7 @@ final class AccountForm extends Component
             'team_id' => $this->teamId,
             'is_active' => $this->isActive,
             'email_reminders_opt_in' => $this->emailRemindersOptIn,
+            'annual_leave_days' => $this->annualLeaveDays,
             'employment_start' => $this->employmentStart !== '' ? $this->employmentStart : null,
             'employment_end' => $this->employmentEnd !== '' ? $this->employmentEnd : null,
         ]);
@@ -509,10 +553,24 @@ final class AccountForm extends Component
                 'role' => $this->role,
                 'team_id' => $this->teamId,
                 'is_active' => $this->isActive,
+                'annual_leave_days' => $this->annualLeaveDays,
                 'employment_start' => $this->employmentStart,
                 'employment_end' => $this->employmentEnd,
             ],
         ]);
+
+        // Specifiek audit-event voor verlofrecht-wijziging (Req 9.2)
+        if ($leaveAllowanceChanged) {
+            app(AuditService::class)->record([
+                'organization_id' => (int) $actor->organization_id,
+                'actor_id' => (int) $actor->id,
+                'action' => 'LEAVE_ALLOWANCE_UPDATED',
+                'target_type' => 'user',
+                'target_id' => (string) $target->id,
+                'before_data' => ['annual_leave_days' => $previousAnnualLeaveDays],
+                'after_data' => ['annual_leave_days' => $newAnnualLeaveDays],
+            ]);
+        }
 
         $this->confirmation = 'Account opgeslagen.';
         $this->dispatch('account-saved');
@@ -579,6 +637,7 @@ final class AccountForm extends Component
         foreach (self::FIELD_DEFAULTS as $property => $value) {
             $this->{$property} = $value;
         }
+        $this->leaveBalance = null;
     }
 
     /**
@@ -600,6 +659,7 @@ final class AccountForm extends Component
                 'team_id' => 'teamId',
                 'is_active' => 'isActive',
                 'email_reminders_opt_in' => 'emailRemindersOptIn',
+                'annual_leave_days' => 'annualLeaveDays',
                 'employment_start' => 'employmentStart',
                 'employment_end' => 'employmentEnd',
                 default => 'name',

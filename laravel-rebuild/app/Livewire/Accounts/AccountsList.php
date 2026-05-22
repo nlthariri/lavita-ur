@@ -427,6 +427,33 @@ final class AccountsList extends Component
     }
 
     /**
+     * Soft-delete placeholder — UI-stub zolang de retentie-module (taak 17.x)
+     * nog niet live is. Toont een NL-bevestiging dat de functie geactiveerd
+     * wordt zodra de retentie-module landt. Doet bewust geen DB-mutatie.
+     *
+     * Alleen owner mag deze actie uitvoeren; manager krijgt een foutmelding.
+     */
+    public function softDeletePlaceholder(int $userId): void
+    {
+        $this->resetErrorBag();
+        $this->confirmation = null;
+
+        /** @var \App\Models\User|null $actor */
+        $actor = Auth::user();
+        if ($actor === null) {
+            abort(403, 'Geen toegang.');
+        }
+
+        if ((string) $actor->role !== 'owner') {
+            $this->addError('softDelete', 'Alleen eigenaar kan accounts verwijderen.');
+
+            return;
+        }
+
+        $this->confirmation = 'Soft-delete wordt geactiveerd zodra de retentie-module live is (taak 17.x). Het account is nog niet gewijzigd.';
+    }
+
+    /**
      * Toggle MFA voor het opgegeven account. Owner-only.
      *
      * - Als de user een actieve MFA heeft (verified_at != null, disabled_at == null):

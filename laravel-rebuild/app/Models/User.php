@@ -9,12 +9,13 @@ use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 
-#[Fillable(['name', 'full_name', 'email', 'password', 'organization_id', 'team_id', 'role', 'is_active', 'email_reminders_opt_in', 'employment_start', 'employment_end', 'phone'])]
+#[Fillable(['name', 'full_name', 'email', 'password', 'organization_id', 'team_id', 'role', 'is_active', 'email_reminders_opt_in', 'employment_start', 'employment_end', 'phone', 'annual_leave_days'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -40,6 +41,7 @@ class User extends Authenticatable
             'employment_start' => 'date',
             'employment_end' => 'date',
             'deleted_at' => 'datetime',
+            'annual_leave_days' => 'integer',
         ];
     }
 
@@ -88,5 +90,21 @@ class User extends Authenticatable
     public function mfaRecoveryCodes(): HasMany
     {
         return $this->hasMany(MfaRecoveryCode::class);
+    }
+
+    /**
+     * Verlof-types van de organisatie waartoe deze gebruiker behoort.
+     * Handig voor het ophalen van beschikbare verlof-types via de user.
+     */
+    public function leaveTypes(): HasManyThrough
+    {
+        return $this->hasManyThrough(
+            LeaveType::class,
+            Organization::class,
+            'id',              // organizations.id
+            'organization_id', // leave_types.organization_id
+            'organization_id', // users.organization_id
+            'id'               // organizations.id
+        );
     }
 }

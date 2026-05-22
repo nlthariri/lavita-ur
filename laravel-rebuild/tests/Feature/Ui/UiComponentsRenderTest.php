@@ -116,6 +116,74 @@ final class UiComponentsRenderTest extends TestCase
         self::assertStringContainsString('(verplicht)', $html);
     }
 
+    public function test_toast_renders_alpine_container_with_aria_attributes(): void
+    {
+        $html = Blade::render('<x-ui.toast />');
+
+        // Alpine.js toastManager data-binding.
+        self::assertStringContainsString('x-data="toastManager()"', $html);
+
+        // Luistert naar @toast.window events (Livewire dispatch).
+        self::assertStringContainsString('x-on:toast.window="addToast($event.detail)"', $html);
+
+        // ARIA: role="alert" en aria-live="polite" op individuele toasts.
+        self::assertStringContainsString('role="alert"', $html);
+        self::assertStringContainsString('aria-live="polite"', $html);
+
+        // Sluit-knop met aria-label="Melding sluiten".
+        self::assertStringContainsString('aria-label="Melding sluiten"', $html);
+
+        // Positioning: fixed top-4 (responsive).
+        self::assertStringContainsString('fixed', $html);
+        self::assertStringContainsString('top-4', $html);
+
+        // Desktop: right-4, mobiel: inset-x-4.
+        self::assertStringContainsString('inset-x-4', $html);
+        self::assertStringContainsString('tablet:right-4', $html);
+
+        // Slide-in animatie classes (enter-start).
+        self::assertStringContainsString('translate-x-full', $html);
+
+        // Hover-pause functionaliteit (mouseenter/mouseleave handlers).
+        self::assertStringContainsString('pauseToast(toast.id)', $html);
+        self::assertStringContainsString('resumeToast(toast.id)', $html);
+
+        // Variant-styling via Alpine x-bind:class.
+        self::assertStringContainsString('variantClasses(toast.variant)', $html);
+
+        // Variant-icoon via Alpine x-html.
+        self::assertStringContainsString('variantIcon(toast.variant)', $html);
+    }
+
+    public function test_toast_alpine_script_contains_queue_and_timing_logic(): void
+    {
+        // De @push('scripts') content wordt niet gerenderd door Blade::render()
+        // maar wel wanneer de component in een layout met @stack('scripts') staat.
+        // We testen het script-bestand direct.
+        $componentSource = file_get_contents(
+            resource_path('views/components/ui/toast.blade.php')
+        );
+
+        // Queue-logica: max 3 zichtbaar.
+        self::assertStringContainsString('maxVisible: 3', $componentSource);
+
+        // Auto-dismiss durations.
+        self::assertStringContainsString('8000', $componentSource); // error duration
+        self::assertStringContainsString('5000', $componentSource); // default duration
+
+        // Hover-pause timer logica.
+        self::assertStringContainsString('pauseToast', $componentSource);
+        self::assertStringContainsString('resumeToast', $componentSource);
+
+        // Alpine.js registratie.
+        self::assertStringContainsString("Alpine.data('toastManager'", $componentSource);
+
+        // Variant-kleuren mapping.
+        self::assertStringContainsString('bg-success-bg', $componentSource);
+        self::assertStringContainsString('bg-danger-bg', $componentSource);
+        self::assertStringContainsString('bg-warning-bg', $componentSource);
+    }
+
     public function test_status_badge_renders_rounded_pill_with_variant_tokens(): void
     {
         $html = Blade::render(

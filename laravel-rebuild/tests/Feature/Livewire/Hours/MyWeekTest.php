@@ -194,12 +194,14 @@ final class MyWeekTest extends TestCase
     public function test_finalized_entry_without_objection_shows_objection_button(): void
     {
         $monday = Carbon::parse($this->weekStartIso, 'Europe/Amsterdam');
-        $this->seedWorkEntry($this->employee1, $monday->toDateString(), 480, isFinalized: true);
+        $entry = $this->seedWorkEntry($this->employee1, $monday->toDateString(), 480, isFinalized: true);
 
         $this->actingAs($this->employee1);
 
+        // In the timeline design, the objection button is in the expandable detail panel
         Livewire::test(MyWeek::class)
             ->assertOk()
+            ->call('toggleDetail', $entry->id)
             ->assertSee('Bezwaar indienen')
             ->assertDontSee('Bezwaar open');
     }
@@ -221,13 +223,20 @@ final class MyWeekTest extends TestCase
         $this->actingAs($this->employee1);
 
         $component = Livewire::test(MyWeek::class)
-            ->assertOk()
-            ->assertSee('Bezwaar open');
+            ->assertOk();
 
-        // De knop "Bezwaar indienen" mag voor déze regel niet getoond
-        // worden — we bewijzen dat door te kijken of de combinatie van
-        // event-naam met dit specifieke entry-id voorkomt.
+        // The objection icon with title "Bezwaar open" should be visible in the timeline
         $html = $component->html();
+        $this->assertStringContainsString(
+            'Bezwaar open',
+            $html,
+            'De bezwaar-icoon met title "Bezwaar open" moet zichtbaar zijn in de tijdlijn.'
+        );
+
+        // Expand the detail panel - the objection button should NOT be shown
+        $component->call('toggleDetail', $entry->id);
+        $html = $component->html();
+
         $this->assertStringNotContainsString(
             "open-new-objection', { workEntryId: {$entry->id} }",
             $html,
@@ -238,12 +247,14 @@ final class MyWeekTest extends TestCase
     public function test_draft_entry_shows_concept_badge(): void
     {
         $monday = Carbon::parse($this->weekStartIso, 'Europe/Amsterdam');
-        $this->seedWorkEntry($this->employee1, $monday->toDateString(), 480, isFinalized: false);
+        $entry = $this->seedWorkEntry($this->employee1, $monday->toDateString(), 480, isFinalized: false);
 
         $this->actingAs($this->employee1);
 
+        // In the timeline design, status is shown in the expandable detail panel
         Livewire::test(MyWeek::class)
             ->assertOk()
+            ->call('toggleDetail', $entry->id)
             ->assertSee('Concept')
             ->assertDontSee('Bezwaar indienen');
     }
@@ -298,7 +309,11 @@ final class MyWeekTest extends TestCase
 
         $this->actingAs($this->employee1);
 
-        $component = Livewire::test(MyWeek::class)->assertOk();
+        // Expand the detail panel first (timeline design requires click to expand)
+        $component = Livewire::test(MyWeek::class)
+            ->assertOk()
+            ->call('toggleDetail', $entry->id);
+
         $html = $component->html();
 
         // Patroon dat zowel single als double quotes accepteert (Livewire

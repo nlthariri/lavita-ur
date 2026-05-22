@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 namespace App\Livewire\Hours;
 
+use App\Models\AtwViolation;
 use App\Models\Objection;
 use App\Models\Team;
 use App\Models\User;
 use App\Models\WorkEntry;
+use App\Services\CopyWeekService;
 use App\Services\HolidaysService;
 use Carbon\Carbon;
 use Illuminate\Contracts\View\View;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Attributes\Layout;
@@ -105,6 +108,57 @@ final class WeekOverviewTable extends Component
     private ?array $netMinutesMatrixCache = null;
 
     /**
+     * In-memory cache van type-matrix `[employee_id => [Y-m-d => type]]`.
+     * Type is WORK, SICK, LEAVE, HOLIDAY of null (leeg).
+     *
+     * @var array<int, array<string, string|null>>|null
+     */
+    private ?array $typeMatrixCache = null;
+
+    /**
+     * In-memory cache van entry-ID-matrix `[employee_id => [Y-m-d => entry_id]]`.
+     * Bevat het ID van de eerste entry per cel, zodat de invoermodal in
+     * edit-modus kan worden geopend. `null` = geen entry op die dag.
+     *
+     * @var array<int, array<string, int|null>>|null
+     */
+    private ?array $entryIdMatrixCache = null;
+
+    /**
+     * In-memory cache van ATW-violations per cel `[employee_id|Y-m-d => severity]`.
+     * Severity is 'critical' of 'warning'.
+     *
+     * @var array<string, string>|null
+     */
+    private ?array $atwViolationsCache = null;
+
+    /**
+     * Geeft aan of de bevestigingsmodal voor copy-week zichtbaar is.
+     */
+    public bool $showCopyWeekModal = false;
+
+    /**
+     * Loading state voor de copy-week operatie.
+     */
+    public bool $copyWeekLoading = false;
+
+    /**
+     * Details van overgeslagen regels na copy-week (voor warning-toast detail).
+     *
+     * @var array<int, array{date: string, start_time: string, reason: string}>
+     */
+    public array $copyWeekSkippedDetails = [];
+
+    /**
+     * In-memory cache van per-medewerker ATW-status.
+     * [employee_id => ['severity' => 'warning'|'critical', 'violations' => [...]]].
+     * Requirement 15.1: indicator naast medewerker-naam.
+     *
+     * @var array<int, array{severity: string, violations: array<int, array{type: string, current_minutes: int, threshold_minutes: int}>}>|null
+     */
+    private ?array $employeeAtwStatusCache = null;
+
+    /**
      * Mount-fase.
      *
      * 1. Resolve current user via de `Auth`-facade. Geen user → 403.
@@ -187,6 +241,171 @@ final class WeekOverviewTable extends Component
             ->toDateString();
 
         $this->resetMatrixCaches();
+    }
+
+    /**
+     * Open de bevestigingsmodal voor copy-week.
+     * Requirement 5.2: bevestigingsmodal met bron/doel-week datums.
+     */
+    public function openCopyWeekModal(): void
+    {
+        $this->showCopyWeekModal = true;
+        $this->copyWeekSkippedDetails = [];
+    }
+
+    /**
+     * Sluit de bevestigingsmodal voor copy-week.
+     */
+    public function closeCopyWeekModal(): void
+    {
+        $this->showCopyWeekModal = false;
+        $this->copyWeekSkippedDetails = [];
+    }
+
+    /**
+     * Voer de copy-week operatie uit.
+     *
+     * Kopieert werkregels van de vorige week naar de huidige week voor alle
+     * medewerkers in de zichtbare scope. Geeft toast-feedback op basis van
+     * het resultaat.
+     *
+     * Requirements: 5.3, 5.4, 5.5, 5.6, 5.7
+     */
+    public function executeCopyWeek(): void
+    {
+        $this->copyWeekLoading = true;
+
+        /** @var User|null $user */
+        $user = Auth::user();
+
+        if ($user === null) {
+            $this->copyWeekLoading = false;
+            $this->showCopyWeekModal = false;
+
+            return;
+        }
+
+        // Alleen owner/manager mag kopiëren (Requirement 5.8)
+        if (! in_array((string) $user->role, ['owner', 'manager'], true)) {
+            $this->copyWeekLoading = false;
+            $this->showCopyWeekModal = false;
+
+            return;
+        }
+
+        $targetMonday = $this->weekStart;
+        $sourceMonday = Carbon::parse($this->weekStart, 'Europe/Amsterdam')
+            ->subDays(7)
+            ->toDateString();
+
+        // Haal de zichtbare medewerkers op (scope-filtering)
+        $employees = $this->getEmployees();
+        $employeeIds = $employees->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        if ($employeeIds === []) {
+            $this->copyWeekLoading = false;
+            $this->showCopyWeekModal = false;
+            $this->dispatch('toast', variant: 'info', message: 'Geen medewerkers in de huidige scope.');
+
+            return;
+        }
+
+        /** @var CopyWeekService $copyWeekService */
+        $copyWeekService = app(CopyWeekService::class);
+
+        $totalCreated = 0;
+        $totalSkipped = 0;
+        $allSkippedDetails = [];
+        $sourceWeekEmpty = true;
+
+        foreach ($employeeIds as $employeeId) {
+            try {
+                $result = $copyWeekService->copyWeek($employeeId, $sourceMonday, $targetMonday, $user->id);
+                $sourceWeekEmpty = false;
+                $totalCreated += count($result['created']);
+                $totalSkipped += count($result['skipped']);
+                $allSkippedDetails = array_merge($allSkippedDetails, $result['skipped']);
+            } catch (HttpResponseException $e) {
+                $response = $e->getResponse();
+                $statusCode = $response->getStatusCode();
+
+                if ($statusCode === 422) {
+                    // SOURCE_WEEK_EMPTY voor deze medewerker — ga door met de volgende
+                    continue;
+                }
+
+                if ($statusCode === 403) {
+                    // Scope-overtreding — skip deze medewerker
+                    continue;
+                }
+
+                // Onverwachte fout — stop en toon error
+                $this->copyWeekLoading = false;
+                $this->showCopyWeekModal = false;
+                $this->dispatch('toast', variant: 'error', message: 'Er is een fout opgetreden bij het kopiëren.');
+
+                return;
+            }
+        }
+
+        // Resultaat verwerken
+        $this->copyWeekLoading = false;
+        $this->showCopyWeekModal = false;
+
+        if ($sourceWeekEmpty && $totalCreated === 0 && $totalSkipped === 0) {
+            // Requirement 5.6: bronweek leeg
+            $this->dispatch('toast', variant: 'info', message: 'Vorige week bevat geen werkregels om te kopiëren.');
+        } elseif ($totalSkipped > 0) {
+            // Requirement 5.5: warning met overgeslagen regels
+            $this->copyWeekSkippedDetails = $allSkippedDetails;
+            $this->dispatch('toast', variant: 'warning', message: "Week gekopieerd met {$totalSkipped} overgeslagen regels.");
+        } else {
+            // Requirement 5.4: success
+            $this->dispatch('toast', variant: 'success', message: "Week gekopieerd: {$totalCreated} regels aangemaakt.");
+        }
+
+        // Ververs het weekoverzicht
+        $this->resetMatrixCaches();
+    }
+
+    /**
+     * Geeft de bron-week datums terug voor de bevestigingsmodal.
+     * Format: "maandag DD-MM-YYYY - zondag DD-MM-YYYY"
+     */
+    public function getSourceWeekLabel(): string
+    {
+        $sourceMonday = Carbon::parse($this->weekStart, 'Europe/Amsterdam')->subDays(7);
+        $sourceSunday = $sourceMonday->copy()->addDays(6);
+
+        return $sourceMonday->format('d-m-Y') . ' - ' . $sourceSunday->format('d-m-Y');
+    }
+
+    /**
+     * Geeft de doel-week datums terug voor de bevestigingsmodal.
+     * Format: "maandag DD-MM-YYYY - zondag DD-MM-YYYY"
+     */
+    public function getTargetWeekLabel(): string
+    {
+        $targetMonday = Carbon::parse($this->weekStart, 'Europe/Amsterdam');
+        $targetSunday = $targetMonday->copy()->addDays(6);
+
+        return $targetMonday->format('d-m-Y') . ' - ' . $targetSunday->format('d-m-Y');
+    }
+
+    /**
+     * Bepaalt of de huidige gebruiker de copy-week knop mag zien.
+     * Requirement 5.1, 5.8: alleen owner en manager.
+     */
+    public function canCopyWeek(): bool
+    {
+        /** @var User|null $user */
+        $user = Auth::user();
+
+        if ($user === null) {
+            return false;
+        }
+
+        return in_array((string) $user->role, ['owner', 'manager'], true);
     }
 
     /**
@@ -458,13 +677,315 @@ final class WeekOverviewTable extends Component
         };
     }
 
+    /**
+     * Haal het werkregel-type op voor een cel (WORK, SICK, LEAVE, HOLIDAY of null).
+     * Requirement 4.1, 4.10: kleurcodering ongeacht is_finalized.
+     */
+    public function getTypeForCell(int $employeeId, string $isoDate): ?string
+    {
+        if ($this->typeMatrixCache === null) {
+            $this->getStatusMatrix(); // Bouwt alle caches op
+        }
+
+        return $this->typeMatrixCache[$employeeId][$isoDate] ?? null;
+    }
+
+    /**
+     * Haal het werk-entry-ID op voor een cel (eerste entry op die dag).
+     * Retourneert null als de cel leeg is.
+     */
+    public function getEntryIdForCell(int $employeeId, string $isoDate): ?int
+    {
+        if ($this->entryIdMatrixCache === null) {
+            $this->getStatusMatrix(); // Bouwt alle caches op
+        }
+
+        return $this->entryIdMatrixCache[$employeeId][$isoDate] ?? null;
+    }
+
+    /**
+     * Geeft de CSS-klassen voor kleurcodering van een cel op basis van type.
+     * Requirement 4.1: Color_Coding mapping.
+     *
+     * @return array{bg: string, border: string}
+     */
+    public static function getColorCodingClasses(?string $type): array
+    {
+        return match ($type) {
+            'WORK' => ['bg' => 'bg-emerald-50', 'border' => 'border-l-4 border-brand-green'],
+            'SICK' => ['bg' => 'bg-red-50', 'border' => 'border-l-4 border-danger'],
+            'LEAVE' => ['bg' => 'bg-blue-50', 'border' => 'border-l-4 border-blue-500'],
+            'HOLIDAY' => ['bg' => 'bg-purple-50', 'border' => 'border-l-4 border-purple-500'],
+            default => ['bg' => 'bg-canvas', 'border' => 'border-l-4 border-dashed border-hairline'],
+        };
+    }
+
+    /**
+     * Bereken het weektotaal (som netto-minuten) voor een medewerker.
+     * Requirement 4.3: totaal-kolom per medewerker.
+     */
+    public function getWeekTotalForEmployee(int $employeeId): int
+    {
+        if ($this->netMinutesMatrixCache === null) {
+            $this->getStatusMatrix();
+        }
+
+        $employeeMinutes = $this->netMinutesMatrixCache[$employeeId] ?? [];
+
+        return array_sum($employeeMinutes);
+    }
+
+    /**
+     * Bereken het dagtotaal (som netto-minuten) voor alle zichtbare medewerkers op een dag.
+     * Requirement 4.4: totaal-rij per dag.
+     */
+    public function getDayTotal(string $isoDate): int
+    {
+        if ($this->netMinutesMatrixCache === null) {
+            $this->getStatusMatrix();
+        }
+
+        $total = 0;
+        foreach ($this->netMinutesMatrixCache as $employeeMinutes) {
+            $total += ($employeeMinutes[$isoDate] ?? 0);
+        }
+
+        return $total;
+    }
+
+    /**
+     * Bereken het Grand_Total (som van alle uren van alle medewerkers voor de hele week).
+     * Requirement 4.5: Grand_Total rechtsonder.
+     */
+    public function getGrandTotal(): int
+    {
+        if ($this->netMinutesMatrixCache === null) {
+            $this->getStatusMatrix();
+        }
+
+        $total = 0;
+        foreach ($this->netMinutesMatrixCache as $employeeMinutes) {
+            $total += array_sum($employeeMinutes);
+        }
+
+        return $total;
+    }
+
+    /**
+     * Formatteer minuten naar HH:mm formaat.
+     * Requirement 4.3, 4.4, 4.5: totalen in HH:mm formaat.
+     */
+    public static function formatMinutesToHHmm(int $minutes): string
+    {
+        if ($minutes <= 0) {
+            return '00:00';
+        }
+
+        $h = intdiv($minutes, 60);
+        $m = $minutes % 60;
+
+        return sprintf('%02d:%02d', $h, $m);
+    }
+
+    /**
+     * Genereer tooltip-tekst voor een cel.
+     * Requirement 4.6: tooltips bij hover.
+     */
+    public function getTooltipForCell(int $employeeId, string $employeeName, string $isoDate): string
+    {
+        $type = $this->getTypeForCell($employeeId, $isoDate);
+
+        if ($type === null) {
+            // Lege cel
+            $date = Carbon::parse($isoDate, 'Europe/Amsterdam');
+            $dayName = $this->getDutchDayName($date);
+
+            return "Klik om uren in te voeren voor {$employeeName} op {$dayName} {$date->format('d-m-Y')}";
+        }
+
+        // Gevulde cel: "[type]: [HH:mm] netto"
+        $minutes = $this->getNetMinutesForCell($employeeId, $isoDate);
+        $formatted = self::formatMinutesToHHmm($minutes);
+        $typeLabel = $this->getDutchTypeLabel($type);
+
+        return "{$typeLabel}: {$formatted} netto";
+    }
+
+    /**
+     * Controleer of een cel een ATW-waarschuwing heeft.
+     * Requirement 4.7: oranje rand + icoon bij cellen met violations.
+     *
+     * @return string|null 'warning' of 'critical', of null als geen violation
+     */
+    public function getAtwViolationForCell(int $employeeId, string $isoDate): ?string
+    {
+        if ($this->atwViolationsCache === null) {
+            $this->buildAtwViolationsCache();
+        }
+
+        return $this->atwViolationsCache["{$employeeId}|{$isoDate}"] ?? null;
+    }
+
+    /**
+     * Haal de per-medewerker ATW-status op voor de zichtbare week.
+     * Requirement 15.1: indicator naast medewerker-naam (oranje driehoek / rood uitroepteken).
+     * Requirement 15.3: opgehaald in dezelfde query als de status-matrix (geen extra roundtrips).
+     *
+     * @return array{severity: string, violations: array<int, array{type: string, current_minutes: int, threshold_minutes: int}>}|null
+     */
+    public function getAtwStatusForEmployee(int $employeeId): ?array
+    {
+        if ($this->employeeAtwStatusCache === null) {
+            $this->buildAtwViolationsCache();
+        }
+
+        return $this->employeeAtwStatusCache[$employeeId] ?? null;
+    }
+
+    /**
+     * Genereer tooltip-tekst voor de per-medewerker ATW-indicator.
+     * Requirement 15.2: tooltip met overtreding-type.
+     *
+     * Formaten:
+     *  - "Weekwaarschuwing: [X]u van max 48u"
+     *  - "Weeklimiet overschreden: [X]u van max 60u"
+     *  - "Rusttijd te kort: [X]u van min 11u"
+     */
+    public function getAtwTooltipForEmployee(int $employeeId): string
+    {
+        $status = $this->getAtwStatusForEmployee($employeeId);
+
+        if ($status === null) {
+            return '';
+        }
+
+        $lines = [];
+        foreach ($status['violations'] as $violation) {
+            $currentHours = round($violation['current_minutes'] / 60, 0);
+            $thresholdHours = round($violation['threshold_minutes'] / 60, 0);
+
+            $lines[] = match ($violation['type']) {
+                'WEEKLY_WARNING' => "Weekwaarschuwing: {$currentHours}u van max {$thresholdHours}u",
+                'WEEKLY_LIMIT', 'DAILY_LIMIT' => "Weeklimiet overschreden: {$currentHours}u van max {$thresholdHours}u",
+                'REST_PERIOD' => "Rusttijd te kort: {$currentHours}u van min {$thresholdHours}u",
+                default => "ATW-overtreding: {$violation['type']}",
+            };
+        }
+
+        return implode("\n", array_unique($lines));
+    }
+
+    /**
+     * Nederlandse dagnaam voor tooltip.
+     */
+    private function getDutchDayName(Carbon $date): string
+    {
+        $days = ['maandag', 'dinsdag', 'woensdag', 'donderdag', 'vrijdag', 'zaterdag', 'zondag'];
+
+        return $days[$date->dayOfWeekIso - 1];
+    }
+
+    /**
+     * Nederlands label voor werkregel-type.
+     */
+    private function getDutchTypeLabel(string $type): string
+    {
+        return match ($type) {
+            'WORK' => 'Werk',
+            'SICK' => 'Ziek',
+            'LEAVE' => 'Verlof',
+            'HOLIDAY' => 'Feestdag',
+            default => $type,
+        };
+    }
+
+    /**
+     * Bouw de ATW-violations cache op voor de zichtbare week.
+     * Haalt alle actieve (niet-superseded) violations op voor de medewerkers
+     * in de huidige scope en week.
+     *
+     * Bouwt tegelijkertijd de per-medewerker ATW-status cache op
+     * (Requirement 15.3: geen extra roundtrips).
+     */
+    private function buildAtwViolationsCache(): void
+    {
+        $this->atwViolationsCache = [];
+        $this->employeeAtwStatusCache = [];
+
+        $employees = $this->getEmployees();
+        $employeeIds = $employees->pluck('id')->map(fn ($id) => (int) $id)->all();
+
+        if ($employeeIds === []) {
+            return;
+        }
+
+        $monday = Carbon::parse($this->weekStart, 'Europe/Amsterdam')->startOfDay();
+        $sunday = $monday->copy()->addDays(6)->endOfDay();
+
+        // Haal violations op die gekoppeld zijn aan work_entries in deze week
+        $violations = AtwViolation::query()
+            ->whereIn('user_id', $employeeIds)
+            ->whereNull('superseded_at')
+            ->whereHas('workEntry', function ($query) use ($monday, $sunday) {
+                $query->whereBetween('entry_date', [$monday->toDateString(), $sunday->toDateString()])
+                    ->whereNull('deleted_at');
+            })
+            ->with(['workEntry:id,employee_id,entry_date'])
+            ->get(['id', 'user_id', 'work_entry_id', 'severity', 'violation_type', 'current_minutes', 'threshold_minutes']);
+
+        // Per-medewerker aggregatie voor de naam-indicator
+        $employeeViolations = [];
+
+        foreach ($violations as $violation) {
+            if ($violation->workEntry === null) {
+                continue;
+            }
+
+            $eid = (int) $violation->user_id;
+            $iso = $violation->workEntry->entry_date instanceof Carbon
+                ? $violation->workEntry->entry_date->toDateString()
+                : (string) $violation->workEntry->entry_date;
+
+            // Cel-level cache (bestaande functionaliteit)
+            $key = "{$eid}|{$iso}";
+
+            // Bewaar de hoogste severity (critical > warning)
+            $existing = $this->atwViolationsCache[$key] ?? null;
+            if ($existing === null || ($violation->severity === 'critical' && $existing === 'warning')) {
+                $this->atwViolationsCache[$key] = $violation->severity;
+            }
+
+            // Per-medewerker aggregatie (Requirement 15.1)
+            if (! isset($employeeViolations[$eid])) {
+                $employeeViolations[$eid] = [
+                    'severity' => $violation->severity,
+                    'violations' => [],
+                ];
+            }
+
+            // Bewaar hoogste severity per medewerker
+            if ($violation->severity === 'critical' && $employeeViolations[$eid]['severity'] === 'warning') {
+                $employeeViolations[$eid]['severity'] = 'critical';
+            }
+
+            // Voeg violation-details toe voor tooltip (Requirement 15.2)
+            $employeeViolations[$eid]['violations'][] = [
+                'type' => (string) $violation->violation_type,
+                'current_minutes' => (int) $violation->current_minutes,
+                'threshold_minutes' => (int) $violation->threshold_minutes,
+            ];
+        }
+
+        $this->employeeAtwStatusCache = $employeeViolations;
+    }
+
     public function render(): View
     {
         return view('livewire.hours.week-overview-table');
     }
 
     /**
-     * Bouw status- en netto-minuten-matrices in één pass.
+     * Bouw status-, netto-minuten- en type-matrices in één pass.
      *
      * @return array{0: array<int, array<string, string>>, 1: array<int, array<string, int>>}
      */
@@ -479,28 +1000,37 @@ final class WeekOverviewTable extends Component
 
         $matrixStatus = [];
         $matrixMinutes = [];
+        $matrixType = [];
+        $matrixEntryId = [];
 
         foreach ($employeeIds as $eid) {
             $matrixStatus[$eid] = [];
             $matrixMinutes[$eid] = [];
+            $matrixType[$eid] = [];
+            $matrixEntryId[$eid] = [];
 
             for ($i = 0; $i < 7; $i++) {
                 $iso = $monday->copy()->addDays($i)->toDateString();
                 $matrixStatus[$eid][$iso] = 'empty';
                 $matrixMinutes[$eid][$iso] = 0;
+                $matrixType[$eid][$iso] = null;
+                $matrixEntryId[$eid][$iso] = null;
             }
         }
 
         if ($employeeIds === []) {
+            $this->typeMatrixCache = $matrixType;
+            $this->entryIdMatrixCache = $matrixEntryId;
+
             return [$matrixStatus, $matrixMinutes];
         }
 
-        // Entries in één SQL-query ophalen.
+        // Entries in één SQL-query ophalen (inclusief type voor kleurcodering).
         $entries = WorkEntry::query()
             ->whereIn('employee_id', $employeeIds)
             ->whereBetween('entry_date', [$monday->toDateString(), $sunday->toDateString()])
             ->whereNull('deleted_at')
-            ->get(['id', 'employee_id', 'entry_date', 'net_minutes', 'is_finalized']);
+            ->get(['id', 'employee_id', 'entry_date', 'net_minutes', 'is_finalized', 'type']);
 
         // Open objections per work_entry_id.
         /** @var array<int, int> $openObjectionEntryIds — set: entry_id => 1 */
@@ -539,6 +1069,17 @@ final class WeekOverviewTable extends Component
 
             $matrixMinutes[$eid][$iso] += (int) $entry->net_minutes;
 
+            // Entry-ID opslaan — bij meerdere entries per cel, neem het eerste ID.
+            if ($matrixEntryId[$eid][$iso] === null) {
+                $matrixEntryId[$eid][$iso] = (int) $entry->id;
+            }
+
+            // Type opslaan — bij meerdere entries per cel, neem het eerste
+            // niet-null type (prioriteit: WORK > SICK > LEAVE > HOLIDAY).
+            if ($matrixType[$eid][$iso] === null && $entry->type !== null) {
+                $matrixType[$eid][$iso] = (string) $entry->type;
+            }
+
             $entryId = (int) $entry->id;
             if (isset($openObjectionEntryIds[$entryId])) {
                 $hasObjection["$eid|$iso"] = true;
@@ -564,6 +1105,9 @@ final class WeekOverviewTable extends Component
             $matrixStatus[(int) $eidStr][$iso] = 'objection';
         }
 
+        $this->typeMatrixCache = $matrixType;
+        $this->entryIdMatrixCache = $matrixEntryId;
+
         return [$matrixStatus, $matrixMinutes];
     }
 
@@ -575,5 +1119,9 @@ final class WeekOverviewTable extends Component
     {
         $this->statusMatrixCache = null;
         $this->netMinutesMatrixCache = null;
+        $this->typeMatrixCache = null;
+        $this->entryIdMatrixCache = null;
+        $this->atwViolationsCache = null;
+        $this->employeeAtwStatusCache = null;
     }
 }

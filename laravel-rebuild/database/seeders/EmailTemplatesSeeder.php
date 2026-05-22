@@ -158,6 +158,63 @@ HTML;
                     'updated_by_actor_id' => null,
                 ],
             );
+
+            // Verlof e-mail templates (Requirement 13.4, 13.6)
+            EmailTemplate::updateOrCreate(
+                [
+                    'organization_id' => (int) $organization->id,
+                    'type' => 'leave_approved',
+                ],
+                [
+                    'subject_template' => 'Verlof goedgekeurd',
+                    'body_text_template' => "Beste {{ full_name }},\n\nUw verlofaanvraag is goedgekeurd.\n\nDetails:\n- Datum: {{ leave_date }}\n- Type: {{ leave_type }}\n- Goedgekeurd door: {{ approved_by }}\n\nMet vriendelijke groet,\nLaVita Urenregistratie",
+                    'body_html_template' => '<p>Beste {{ full_name }},</p><p>Uw verlofaanvraag is goedgekeurd.</p><p><strong>Details:</strong></p><ul><li>Datum: {{ leave_date }}</li><li>Type: {{ leave_type }}</li><li>Goedgekeurd door: {{ approved_by }}</li></ul><p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
+                    'is_active' => true,
+                    'updated_by_actor_id' => null,
+                ],
+            );
+
+            EmailTemplate::updateOrCreate(
+                [
+                    'organization_id' => (int) $organization->id,
+                    'type' => 'leave_rejected',
+                ],
+                [
+                    'subject_template' => 'Verlof afgewezen',
+                    'body_text_template' => "Beste {{ full_name }},\n\nUw verlofaanvraag is helaas afgewezen.\n\nDetails:\n- Datum: {{ leave_date }}\n- Type: {{ leave_type }}\n- Afgewezen door: {{ rejected_by }}\n- Reden: {{ reason }}\n\nNeem contact op met uw leidinggevende voor meer informatie.\n\nMet vriendelijke groet,\nLaVita Urenregistratie",
+                    'body_html_template' => '<p>Beste {{ full_name }},</p><p>Uw verlofaanvraag is helaas afgewezen.</p><p><strong>Details:</strong></p><ul><li>Datum: {{ leave_date }}</li><li>Type: {{ leave_type }}</li><li>Afgewezen door: {{ rejected_by }}</li><li>Reden: {{ reason }}</li></ul><p>Neem contact op met uw leidinggevende voor meer informatie.</p><p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
+                    'is_active' => true,
+                    'updated_by_actor_id' => null,
+                ],
+            );
+
+            EmailTemplate::updateOrCreate(
+                [
+                    'organization_id' => (int) $organization->id,
+                    'type' => 'leave_requested',
+                ],
+                [
+                    'subject_template' => 'Nieuwe verlofaanvraag',
+                    'body_text_template' => "Beste manager,\n\nEr is een nieuwe verlofaanvraag ingediend.\n\nDetails:\n- Medewerker: {{ employee_name }}\n- Datum: {{ leave_date }}\n- Type: {{ leave_type }}\n- Toelichting: {{ note }}\n\nGa naar het verlofoverzicht om de aanvraag te beoordelen.\n\nMet vriendelijke groet,\nLaVita Urenregistratie",
+                    'body_html_template' => '<p>Beste manager,</p><p>Er is een nieuwe verlofaanvraag ingediend.</p><p><strong>Details:</strong></p><ul><li>Medewerker: {{ employee_name }}</li><li>Datum: {{ leave_date }}</li><li>Type: {{ leave_type }}</li><li>Toelichting: {{ note }}</li></ul><p>Ga naar het verlofoverzicht om de aanvraag te beoordelen.</p><p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
+                    'is_active' => true,
+                    'updated_by_actor_id' => null,
+                ],
+            );
+
+            EmailTemplate::updateOrCreate(
+                [
+                    'organization_id' => (int) $organization->id,
+                    'type' => 'leave_reminder',
+                ],
+                [
+                    'subject_template' => 'Herinnering: openstaande verlofaanvraag',
+                    'body_text_template' => "Beste {{ manager_name }},\n\nEr staat een verlofaanvraag van {{ employee_name }} open sinds {{ leave_date }}.\n\nGa naar het verlofoverzicht om de aanvraag te beoordelen.\n\nMet vriendelijke groet,\nLaVita Urenregistratie",
+                    'body_html_template' => '<p>Beste {{ manager_name }},</p><p>Er staat een verlofaanvraag van <strong>{{ employee_name }}</strong> open sinds <strong>{{ leave_date }}</strong>.</p><p>Ga naar het verlofoverzicht om de aanvraag te beoordelen.</p><p>Met vriendelijke groet,<br>LaVita Urenregistratie</p>',
+                    'is_active' => true,
+                    'updated_by_actor_id' => null,
+                ],
+            );
         });
     }
 }

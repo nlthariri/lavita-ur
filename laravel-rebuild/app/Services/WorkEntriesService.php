@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\WorkEntry;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -227,7 +228,7 @@ class WorkEntriesService
             $isEmployeeSelfSubmit = $isLeaveType && (int) $registrar->id === (int) $employee->id && (string) $registrar->role === 'employee';
             $isFinalized = $isEmployeeSelfSubmit ? false : true;
 
-            $entry = WorkEntry::create([
+            $entryData = [
                 'organization_id' => $registrar->organization_id,
                 'employee_id' => $employee->id,
                 'team_id' => $employee->team_id,
@@ -242,7 +243,24 @@ class WorkEntriesService
                 'project_id' => $projectId,
                 'cost_center_id' => $costCenterId,
                 'is_finalized' => $isFinalized,
-            ]);
+            ];
+
+            // leave_type_id alleen meesturen als de kolom bestaat in de database.
+            // Dit voorkomt crashes bij gefaseerde deployments waar de migratie
+            // nog niet is uitgevoerd. Zodra de migratie draait, werkt dit automatisch.
+            if (\Illuminate\Support\Facades\Schema::hasColumn('work_entries', 'leave_type_id')) {
+                $entryData['leave_type_id'] = ($type === 'LEAVE' && isset($input['leave_type_id']))
+                    ? (int) $input['leave_type_id']
+                    : null;
+            }
+
+            try {
+                $entry = WorkEntry::create($entryData);
+            } catch (UniqueConstraintViolationException $e) {
+                throw ValidationException::withMessages([
+                    'entry_date' => 'Er bestaat al een werkregel voor deze medewerker op ' . $entryDate . ' met dezelfde begintijd. Pas de begintijd aan of bewerk de bestaande regel.',
+                ]);
+            }
 
             // Alleen "vastgesteld"-mail sturen als de entry direct is goedgekeurd.
             // Verlofmeldingen in afwachting krijgen pas een mail bij goedkeuring.

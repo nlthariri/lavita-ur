@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\Livewire\Auth;
 
 use App\Livewire\Auth\LoginForm;
+use App\Models\MfaSecret;
 use App\Models\Organization;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -70,6 +71,15 @@ final class LoginFormTest extends TestCase
             'organization_id' => $org->id,
             'role' => 'employee',
             'is_active' => true,
+        ]);
+
+        // MFA moet geconfigureerd zijn zodat de login-flow naar /auth/mfa-verify redirect
+        MfaSecret::create([
+            'user_id' => $user->id,
+            'secret_encrypted' => 'test-secret-encrypted',
+            'issuer' => 'LaVita',
+            'label' => $user->email,
+            'verified_at' => now(),
         ]);
 
         Livewire::test(LoginForm::class)

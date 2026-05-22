@@ -227,14 +227,14 @@ final class ManagerHomeTest extends TestCase
         ]);
     }
 
-    public function test_employee_role_is_forbidden(): void
+    public function test_employee_role_is_redirected(): void
     {
         $employee = $this->employeesTeamA[0];
 
         $this->actingAs($employee);
 
         Livewire::test(ManagerHome::class)
-            ->assertForbidden();
+            ->assertRedirect('/dashboard/medewerker');
     }
 
     public function test_unauthenticated_request_is_forbidden(): void
@@ -251,7 +251,6 @@ final class ManagerHomeTest extends TestCase
             ->assertOk()
             ->assertSet('userFullName', 'Olivia Owner')
             ->assertSet('organizationName', 'LaVita Org Eén')
-            ->assertSee('Dashboard')
             ->assertSee('Olivia Owner')
             ->assertSee('LaVita Org Eén');
     }
@@ -471,12 +470,12 @@ final class ManagerHomeTest extends TestCase
 
         Livewire::test(ManagerHome::class)
             ->assertOk()
-            ->assertSee('Dashboard')
-            ->assertSee('Aanwezigheid deze week')
-            ->assertSee('Openstaande bezwaren')
+            ->assertSee('Totaal uren deze week')
+            ->assertSee('Aanwezigheid')
+            ->assertSee('Verlofaanvragen')
             ->assertSee('ATW-meldingen')
-            ->assertSee('kritiek')
-            ->assertSee('waarschuwing')
+            ->assertSee('Bezwaren')
+            ->assertSee('Ziekteverzuim')
             ->assertSee('Snelkoppelingen');
     }
 
@@ -489,6 +488,6 @@ final class ManagerHomeTest extends TestCase
 
         Livewire::test(ManagerHome::class)
             ->assertOk()
-            ->assertSee('Dashboard');
+            ->assertSee('Snelkoppelingen');
     }
 }

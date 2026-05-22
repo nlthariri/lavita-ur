@@ -355,4 +355,172 @@ final class EntryFormModalTest extends TestCase
             ->set('startTime', '09:00')
             ->assertForbidden();
     }
+
+    /**
+     * Taak 8.1: Slimme defaults — placeholder toont vorige werkdag-tijden
+     * wanneer de medewerker op de vorige werkdag een WORK-entry had.
+     * Requirements: 6.2
+     */
+    public function test_smart_defaults_shows_previous_workday_placeholder(): void
+    {
+        $this->actingAs($this->manager);
+
+        // Maak een werkregel aan voor woensdag 2026-05-20.
+        WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => '2026-05-20',
+            'start_at' => '2026-05-20 09:00:00',
+            'end_at' => '2026-05-20 17:30:00',
+            'pause_minutes' => 30,
+            'net_minutes' => 480,
+            'type' => 'WORK',
+            'is_finalized' => true,
+        ]);
+
+        // Open modal voor donderdag 2026-05-21 → vorige werkdag is woensdag 20 mei.
+        $component = Livewire::test(EntryFormModal::class)
+            ->dispatch('open-entry-form-modal', employeeId: $this->employee->id, entryDate: '2026-05-21');
+
+        $placeholder = $component->get('previousDayPlaceholder');
+        $this->assertSame('Vorige dag: 09:00 - 17:30', $placeholder);
+        $component->assertSee('Vorige dag: 09:00 - 17:30');
+    }
+
+    /**
+     * Taak 8.1: Slimme defaults — geen placeholder als er geen vorige
+     * werkdag-entry is.
+     * Requirements: 6.2
+     */
+    public function test_smart_defaults_null_when_no_previous_workday_entry(): void
+    {
+        $this->actingAs($this->manager);
+
+        // Geen werkregels aangemaakt → placeholder moet null zijn.
+        // Gebruik 2026-05-21 (donderdag) zodat vorige werkdag 2026-05-20 (woensdag) is.
+        $component = Livewire::test(EntryFormModal::class)
+            ->dispatch('open-entry-form-modal', employeeId: $this->employee->id, entryDate: '2026-05-21');
+
+        $this->assertNull($component->get('previousDayPlaceholder'));
+        $component->assertDontSee('Vorige dag:');
+    }
+
+    /**
+     * Taak 8.1: Slimme defaults — weekend wordt overgeslagen bij het
+     * zoeken naar de vorige werkdag.
+     * Requirements: 6.2
+     */
+    public function test_smart_defaults_skips_weekend(): void
+    {
+        $this->actingAs($this->manager);
+
+        // Maak een werkregel aan voor vrijdag 2026-06-05.
+        WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => '2026-06-05',
+            'start_at' => '2026-06-05 08:30:00',
+            'end_at' => '2026-06-05 16:30:00',
+            'pause_minutes' => 30,
+            'net_minutes' => 450,
+            'type' => 'WORK',
+            'is_finalized' => true,
+        ]);
+
+        // Open modal voor maandag 2026-06-08 → vorige werkdag is vrijdag 5 juni.
+        $component = Livewire::test(EntryFormModal::class)
+            ->dispatch('open-entry-form-modal', employeeId: $this->employee->id, entryDate: '2026-06-08');
+
+        $placeholder = $component->get('previousDayPlaceholder');
+        $this->assertSame('Vorige dag: 08:30 - 16:30', $placeholder);
+    }
+
+    /**
+     * Taak 8.1: Toast wordt gedispatcht bij succesvol opslaan.
+     * Requirements: 6.7
+     */
+    public function test_successful_submit_dispatches_toast(): void
+    {
+        $this->actingAs($this->manager);
+
+        Livewire::test(EntryFormModal::class)
+            ->dispatch('open-entry-form-modal', employeeId: $this->employee->id, entryDate: '2026-05-20')
+            ->set('startTime', '09:00')
+            ->set('endTime', '17:00')
+            ->set('pauseMinutes', 30)
+            ->call('submit')
+            ->assertHasNoErrors()
+            ->assertDispatched('toast', variant: 'success', message: 'Werkregel opgeslagen');
+    }
+
+    /**
+     * Taak 8.1: Netto werktijd wordt in "X uur Y minuten" formaat getoond.
+     * Requirements: 6.3
+     */
+    public function test_net_minutes_displayed_in_uur_minuten_format(): void
+    {
+        $this->actingAs($this->manager);
+
+        // 09:00-17:00 met 30 min pauze = 7 uur 30 minuten
+        $component = Livewire::test(EntryFormModal::class)
+            ->dispatch('open-entry-form-modal', employeeId: $this->employee->id, entryDate: '2026-05-15')
+            ->set('startTime', '09:00')
+            ->set('endTime', '17:00')
+            ->set('pauseMinutes', 30);
+
+        $component->assertSee('Netto werktijd:');
+        $component->assertSee('7 uur 30 minuten');
+    }
+
+    /**
+     * Taak 8.1: Modal toont role="dialog" en aria-modal="true".
+     * Requirements: 6.10
+     */
+    public function test_modal_has_dialog_role_and_aria_modal(): void
+    {
+        $this->actingAs($this->manager);
+
+        $component = Livewire::test(EntryFormModal::class)
+            ->dispatch('open-entry-form-modal', employeeId: $this->employee->id, entryDate: '2026-05-15');
+
+        $html = $component->html();
+        $this->assertStringContainsString('role="dialog"', $html);
+        $this->assertStringContainsString('aria-modal="true"', $html);
+        $this->assertStringContainsString('aria-labelledby="entry-modal-heading"', $html);
+    }
+
+    /**
+     * Taak 8.1: Slimme defaults — alleen WORK-entries worden gebruikt,
+     * niet SICK/LEAVE/HOLIDAY.
+     * Requirements: 6.2
+     */
+    public function test_smart_defaults_only_uses_work_entries(): void
+    {
+        $this->actingAs($this->manager);
+
+        // Maak een SICK-entry aan voor woensdag 2026-05-20.
+        WorkEntry::create([
+            'organization_id' => $this->org->id,
+            'employee_id' => $this->employee->id,
+            'team_id' => $this->team->id,
+            'registered_by_id' => $this->manager->id,
+            'entry_date' => '2026-05-20',
+            'start_at' => '2026-05-20 09:00:00',
+            'end_at' => '2026-05-20 17:00:00',
+            'pause_minutes' => 0,
+            'net_minutes' => 0,
+            'type' => 'SICK',
+            'is_finalized' => true,
+        ]);
+
+        // Open modal voor donderdag 2026-05-21 → SICK-entry wordt niet als placeholder getoond.
+        $component = Livewire::test(EntryFormModal::class)
+            ->dispatch('open-entry-form-modal', employeeId: $this->employee->id, entryDate: '2026-05-21');
+
+        $this->assertNull($component->get('previousDayPlaceholder'));
+    }
 }

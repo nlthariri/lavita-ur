@@ -192,7 +192,8 @@ final class WeekOverviewTableTest extends TestCase
         bool $isFinalized = true,
         ?User $registrar = null,
         string $startTime = '08:00:00',
-        string $endTime = '16:00:00'
+        string $endTime = '16:00:00',
+        string $type = 'WORK'
     ): WorkEntry {
         $registrar ??= $this->owner;
 
@@ -207,6 +208,7 @@ final class WeekOverviewTableTest extends TestCase
             'pause_minutes' => 30,
             'net_minutes' => $netMinutes,
             'is_finalized' => $isFinalized,
+            'type' => $type,
         ]);
     }
 
@@ -460,5 +462,160 @@ final class WeekOverviewTableTest extends TestCase
         Livewire::test(WeekOverviewTable::class)
             ->assertOk()
             ->assertSee('Geen medewerkers gevonden voor de huidige scope.');
+    }
+
+    // ─── Copy-week tests (task 7.3) ─────────────────────────────────────
+
+    public function test_copy_week_button_visible_for_owner(): void
+    {
+        $this->actingAs($this->owner);
+
+        Livewire::test(WeekOverviewTable::class)
+            ->assertOk()
+            ->assertSee('Kopieer vorige week');
+    }
+
+    public function test_copy_week_button_visible_for_manager(): void
+    {
+        $this->actingAs($this->managerA);
+
+        Livewire::test(WeekOverviewTable::class)
+            ->assertOk()
+            ->assertSee('Kopieer vorige week');
+    }
+
+    public function test_copy_week_button_hidden_for_boekhouder(): void
+    {
+        $this->actingAs($this->bookkeeper);
+
+        Livewire::test(WeekOverviewTable::class)
+            ->assertOk()
+            ->assertDontSee('Kopieer vorige week');
+    }
+
+    public function test_copy_week_modal_opens_and_shows_week_labels(): void
+    {
+        $this->actingAs($this->owner);
+
+        $component = Livewire::test(WeekOverviewTable::class)
+            ->assertOk()
+            ->assertSet('showCopyWeekModal', false)
+            ->call('openCopyWeekModal')
+            ->assertSet('showCopyWeekModal', true);
+
+        // Verify the source and target week labels are accessible
+        $sourceLabel = $component->instance()->getSourceWeekLabel();
+        $targetLabel = $component->instance()->getTargetWeekLabel();
+
+        $this->assertNotEmpty($sourceLabel);
+        $this->assertNotEmpty($targetLabel);
+        $this->assertNotSame($sourceLabel, $targetLabel);
+    }
+
+    public function test_copy_week_modal_closes(): void
+    {
+        $this->actingAs($this->owner);
+
+        Livewire::test(WeekOverviewTable::class)
+            ->call('openCopyWeekModal')
+            ->assertSet('showCopyWeekModal', true)
+            ->call('closeCopyWeekModal')
+            ->assertSet('showCopyWeekModal', false);
+    }
+
+    public function test_copy_week_empty_source_shows_info_toast(): void
+    {
+        $this->actingAs($this->owner);
+
+        // No work entries in the previous week → info toast
+        Livewire::test(WeekOverviewTable::class)
+            ->call('executeCopyWeek')
+            ->assertDispatched('toast', variant: 'info', message: 'Vorige week bevat geen werkregels om te kopiëren.');
+    }
+
+    public function test_copy_week_success_creates_entries_and_shows_success_toast(): void
+    {
+        $this->actingAs($this->owner);
+
+        $employee = $this->employeesTeamA[0];
+        $currentMonday = Carbon::parse($this->weekStartIso, 'Europe/Amsterdam');
+        $previousMonday = $currentMonday->copy()->subDays(7);
+
+        // Seed a work entry in the previous week (Monday)
+        $this->seedWorkEntry(
+            $employee,
+            $previousMonday->toDateString(),
+            netMinutes: 480,
+            isFinalized: true,
+            startTime: '09:00:00',
+            endTime: '17:30:00'
+        );
+
+        $component = Livewire::test(WeekOverviewTable::class)
+            ->call('executeCopyWeek')
+            ->assertDispatched('toast', variant: 'success');
+
+        // Verify the entry was created in the current week
+        $copiedEntry = WorkEntry::where('employee_id', $employee->id)
+            ->whereDate('entry_date', $currentMonday->toDateString())
+            ->first();
+
+        $this->assertNotNull($copiedEntry, 'A work entry should have been copied to the current week.');
+    }
+
+    public function test_copy_week_can_copy_week_returns_false_for_employee(): void
+    {
+        $employee = $this->employeesTeamA[0];
+
+        // Employee can't even access the component (403), but let's test
+        // the canCopyWeek method directly on a bookkeeper who CAN access
+        $this->actingAs($this->bookkeeper);
+
+        $component = Livewire::test(WeekOverviewTable::class)->assertOk();
+        $this->assertFalse($component->instance()->canCopyWeek());
+    }
+
+    // ─── Print tests (task 10.1) ────────────────────────────────────────
+
+    public function test_print_button_is_visible_for_all_authorized_roles(): void
+    {
+        // Owner sees print button
+        $this->actingAs($this->owner);
+        Livewire::test(WeekOverviewTable::class)
+            ->assertOk()
+            ->assertSee('Printen');
+
+        // Manager sees print button
+        $this->actingAs($this->managerA);
+        Livewire::test(WeekOverviewTable::class)
+            ->assertOk()
+            ->assertSee('Printen');
+
+        // Boekhouder sees print button
+        $this->actingAs($this->bookkeeper);
+        Livewire::test(WeekOverviewTable::class)
+            ->assertOk()
+            ->assertSee('Printen');
+    }
+
+    public function test_print_header_contains_week_number_and_organization(): void
+    {
+        $this->actingAs($this->owner);
+
+        $component = Livewire::test(WeekOverviewTable::class)
+            ->assertOk();
+
+        // The print header should contain the week number and organization name
+        $weekNumber = Carbon::parse($this->weekStartIso, 'Europe/Amsterdam')->isoWeek();
+        $component->assertSee("Weekoverzicht — Week {$weekNumber} — LaVita Org Eén");
+    }
+
+    public function test_print_footer_contains_generated_by_text(): void
+    {
+        $this->actingAs($this->owner);
+
+        Livewire::test(WeekOverviewTable::class)
+            ->assertOk()
+            ->assertSee('Gegenereerd door La Vita Urenregistratie op');
     }
 }

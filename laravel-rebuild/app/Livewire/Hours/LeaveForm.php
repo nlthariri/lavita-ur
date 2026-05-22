@@ -4,13 +4,18 @@ declare(strict_types=1);
 
 namespace App\Livewire\Hours;
 
+use App\Models\AuditEvent;
+use App\Models\LeaveType;
 use App\Models\User;
+use App\Models\WorkEntry;
 use App\Services\AtwService;
+use App\Services\LeaveBalanceService;
 use App\Services\WorkEntriesService;
 use Carbon\Carbon;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Layout;
 use Livewire\Attributes\Title;
@@ -222,6 +227,25 @@ final class LeaveForm extends Component
     public string $note = '';
 
     /**
+     * Dag-duur keuze: 'full' (hele dag) of 'half' (halve dag).
+     * Requirements: 10.1, 10.10
+     */
+    public string $dayDuration = 'full';
+
+    /**
+     * Halve-dag keuze: 'morning' (ochtend tot 12:30) of 'afternoon' (middag vanaf 12:30).
+     * Alleen relevant wanneer $dayDuration === 'half'.
+     * Requirements: 10.1, 10.2, 10.3
+     */
+    public string $halfDayPeriod = 'morning';
+
+    /**
+     * Geselecteerd verlof-type ID. Verplicht wanneer type === 'LEAVE'.
+     * Requirements: 11.5, 11.6
+     */
+    public ?int $leaveTypeId = null;
+
+    /**
      * Bevestigingsbanner-tekst (NL). `null` = geen banner zichtbaar.
      */
     public ?string $confirmation = null;
@@ -233,6 +257,14 @@ final class LeaveForm extends Component
      * faalde volledig.
      */
     public int $createdCount = 0;
+
+    /**
+     * ID van de verlofaanvraag die de gebruiker wil annuleren.
+     * Wordt gezet wanneer de gebruiker op "Annuleren" klikt en
+     * de bevestigingsmodal opent. `null` = modal gesloten.
+     * Requirements: 10.5, 10.6
+     */
+    public ?int $cancellingEntryId = null;
 
     /**
      * Mount-fase.
@@ -331,6 +363,118 @@ final class LeaveForm extends Component
     }
 
     /**
+     * Haal actieve verlof-types op voor de organisatie van de huidige gebruiker.
+     * Requirements: 11.5
+     *
+     * @return Collection<int, LeaveType>
+     */
+    public function getActiveLeaveTypes(): Collection
+    {
+        /** @var User|null $user */
+        $user = Auth::user();
+
+        if ($user === null || ! $this->leaveTypesTableExists()) {
+            return collect();
+        }
+
+        return LeaveType::query()
+            ->forOrganization((int) $user->organization_id)
+            ->active()
+            ->orderBy('name')
+            ->get();
+    }
+
+    /**
+     * Haal het verlof-saldo op voor de geselecteerde medewerker.
+     * Requirements: 9.9
+     *
+     * @return array{annual_days: int|null, taken_days: float, remaining_days: float|null, status: string, breakdown: array<string, float>}|null
+     */
+    public function getLeaveBalance(): ?array
+    {
+        if ($this->employeeId === null) {
+            return null;
+        }
+
+        $service = app(LeaveBalanceService::class);
+
+        return $service->getBalance($this->employeeId, (int) date('Y'));
+    }
+
+    /**
+     * Controleer of het maximum aantal dagen per jaar voor het geselecteerde
+     * verlof-type is bereikt. Retourneert een waarschuwingsbericht of null.
+     * Requirements: 11.7
+     */
+    public function getMaxDaysWarning(): ?string
+    {
+        if ($this->leaveTypeId === null || $this->employeeId === null) {
+            return null;
+        }
+
+        if (! $this->leaveTypesTableExists()) {
+            return null;
+        }
+
+        $leaveType = LeaveType::find($this->leaveTypeId);
+
+        if ($leaveType === null || $leaveType->max_days_per_year === null) {
+            return null;
+        }
+
+        // Tel het aantal opgenomen dagen van dit specifieke type in het huidige jaar
+        $takenDays = WorkEntry::query()
+            ->where('employee_id', $this->employeeId)
+            ->where('type', 'LEAVE')
+            ->where('leave_type_id', $this->leaveTypeId)
+            ->whereNull('deleted_at')
+            ->whereYear('entry_date', (int) date('Y'))
+            ->count();
+
+        // Half-dag entries tellen als 0.5
+        $halfDayCount = WorkEntry::query()
+            ->where('employee_id', $this->employeeId)
+            ->where('type', 'LEAVE')
+            ->where('leave_type_id', $this->leaveTypeId)
+            ->whereNull('deleted_at')
+            ->whereYear('entry_date', (int) date('Y'))
+            ->where(function ($q) {
+                $q->where(function ($sub) {
+                    $sub->whereRaw("TIME_FORMAT(start_at, '%H:%i') = '00:00'")
+                        ->whereRaw("TIME_FORMAT(end_at, '%H:%i') = '12:30'");
+                })->orWhere(function ($sub) {
+                    $sub->whereRaw("TIME_FORMAT(start_at, '%H:%i') = '12:30'")
+                        ->whereRaw("TIME_FORMAT(end_at, '%H:%i') = '23:59'");
+                });
+            })
+            ->count();
+
+        // Correctie: halve dagen tellen als 0.5 i.p.v. 1.0
+        $actualDays = (float) ($takenDays - $halfDayCount) + ($halfDayCount * 0.5);
+
+        if ($actualDays >= $leaveType->max_days_per_year) {
+            return 'Maximum '.$leaveType->name.' bereikt ('.$leaveType->max_days_per_year.' dagen per jaar).';
+        }
+
+        return null;
+    }
+
+    /**
+     * Check of de leave_types tabel bestaat.
+     */
+    private function leaveTypesTableExists(): bool
+    {
+        static $exists = null;
+
+        if ($exists === null) {
+            $exists = Schema::hasTable('leave_types')
+                && Schema::hasColumn('work_entries', 'leave_type_id');
+        }
+
+        return $exists;
+    }
+
+    /**
      * Submit-handler.
      *
      *  1. Resolve actor; null → 403.
@@ -398,22 +542,50 @@ final class LeaveForm extends Component
             return null;
         }
 
-        // 4) Datum-range opbouwen.
+        // 4) Verlof-type verplicht bij LEAVE — req 11.5
+        //    Alleen afdwingen als er daadwerkelijk actieve leave types bestaan
+        if ($this->type === 'LEAVE' && $this->leaveTypesTableExists()) {
+            $hasActiveTypes = LeaveType::query()
+                ->forOrganization((int) $actor->organization_id)
+                ->active()
+                ->exists();
+
+            if ($hasActiveTypes && $this->leaveTypeId === null) {
+                $this->addError(
+                    'leaveTypeId',
+                    'Verlof-type is verplicht bij verlof.'
+                );
+
+                return null;
+            }
+        }
+
+        // 5) Valideer dat het geselecteerde verlof-type actief is en van de eigen organisatie
+        if ($this->type === 'LEAVE' && $this->leaveTypeId !== null && $this->leaveTypesTableExists()) {
+            $leaveType = LeaveType::find($this->leaveTypeId);
+            if ($leaveType === null
+                || (int) $leaveType->organization_id !== (int) $actor->organization_id
+                || ! $leaveType->is_active
+            ) {
+                $this->addError(
+                    'leaveTypeId',
+                    'Het geselecteerde verlof-type is niet beschikbaar.'
+                );
+
+                return null;
+            }
+        }
+
+        // 6) Datum-range opbouwen.
         try {
             $start = Carbon::parse($this->dateFrom)->startOfDay();
             $end = Carbon::parse($this->dateTo)->startOfDay();
         } catch (Throwable) {
-            // Onbereikbaar: validate() vangt deze format-fouten al,
-            // maar defensief om ervoor te zorgen dat we nooit op een
-            // incompleet $start/$end-paar in de loop hieronder belanden.
             $this->addError('dateFrom', 'Begindatum of einddatum is ongeldig.');
 
             return null;
         }
 
-        // diffInDays geeft 0 voor één-dag-verlof; daarom +1 voor het
-        // totale aantal dagen. We cappen op MAX_RANGE_DAYS zodat een
-        // verkeerde typo (bv. 1900..2026) geen geheugendrain wordt.
         $totalDays = (int) $start->diffInDays($end) + 1;
 
         if ($totalDays > self::MAX_RANGE_DAYS) {
@@ -425,6 +597,20 @@ final class LeaveForm extends Component
             return null;
         }
 
+        // 7) Bepaal start/eind-tijden op basis van dag-duur keuze
+        $startTime = self::ALL_DAY_START;
+        $endTime = self::ALL_DAY_END;
+
+        if ($this->dayDuration === 'half') {
+            if ($this->halfDayPeriod === 'morning') {
+                $startTime = '00:00';
+                $endTime = '12:30';
+            } else {
+                $startTime = '12:30';
+                $endTime = '23:59';
+            }
+        }
+
         $created = 0;
         $failureCount = 0;
         $firstFailureMessage = null;
@@ -434,15 +620,22 @@ final class LeaveForm extends Component
             $dateIso = $cursor->toDateString();
 
             try {
-                $workEntriesService->create([
+                $payload = [
                     'employee_id' => (int) $this->employeeId,
                     'entry_date' => $dateIso,
-                    'start_time' => self::ALL_DAY_START,
-                    'end_time' => self::ALL_DAY_END,
+                    'start_time' => $startTime,
+                    'end_time' => $endTime,
                     'pause_minutes' => 0,
                     'type' => $this->type,
                     'note' => trim($this->note),
-                ], (int) $actor->id);
+                ];
+
+                // Voeg leave_type_id toe als het type LEAVE is en er een type geselecteerd is
+                if ($this->type === 'LEAVE' && $this->leaveTypeId !== null) {
+                    $payload['leave_type_id'] = $this->leaveTypeId;
+                }
+
+                $workEntriesService->create($payload, (int) $actor->id);
 
                 $created++;
             } catch (ValidationException $e) {
@@ -454,11 +647,7 @@ final class LeaveForm extends Component
                         ? $first
                         : 'Een dag in de periode kon niet worden opgeslagen.';
                 }
-                // Bewust geen `break;` — partial success blijft mogelijk.
             } catch (Throwable $e) {
-                // Onverwachte fouten (bv. niet-gevonden employee, db-fout)
-                // — ook hier doorgaan op volgende dagen, maar wel een
-                // fallback-melding cachen.
                 $failureCount++;
                 if ($firstFailureMessage === null) {
                     $firstFailureMessage = 'Een dag in de periode kon niet worden opgeslagen.';
@@ -471,36 +660,153 @@ final class LeaveForm extends Component
         $this->createdCount = $created;
 
         if ($created > 0 && $failureCount === 0) {
-            // Volledig succes — bevestiging tonen, invoer-velden
-            // resetten zodat de gebruiker direct een nieuwe melding
-            // kan invoeren zonder oude state.
             $this->confirmation = 'Verlof/ziekte ingediend voor '
                 .$created.' dag(en).';
             $this->note = '';
             $this->dateFrom = '';
             $this->dateTo = '';
+            $this->dayDuration = 'full';
+            $this->halfDayPeriod = 'morning';
 
             $this->dispatch('leave-saved', type: $this->type);
+            $this->dispatch('toast', variant: 'success', message: 'Verlof/ziekte ingediend voor '.$created.' dag(en).');
+
+            // Dispatch leave_requested e-mail naar manager(s) bij employee self-submit (Req 13.3).
+            if ($role === 'employee') {
+                try {
+                    // Haal het laatst aangemaakte entry op voor de notificatie.
+                    $lastEntry = WorkEntry::query()
+                        ->where('employee_id', (int) $actor->id)
+                        ->where('organization_id', (int) $actor->organization_id)
+                        ->whereIn('type', ['SICK', 'LEAVE', 'HOLIDAY'])
+                        ->orderByDesc('id')
+                        ->first();
+
+                    if ($lastEntry !== null) {
+                        app(\App\Services\LeaveNotificationService::class)->notifyRequested($lastEntry, $actor);
+                    }
+                } catch (Throwable) {
+                    // E-mail dispatch mag submit-actie niet blokkeren.
+                }
+            }
 
             return null;
         }
 
         if ($created > 0 && $failureCount > 0) {
-            // Partial: vermeld beide tellingen.
             $this->confirmation = $created.' dag(en) opgeslagen, '
                 .$failureCount.' dag(en) konden niet worden opgeslagen.';
 
             return null;
         }
 
-        // All-fail: toon de eerste foutmelding op `dateFrom` zodat
-        // de gebruiker meteen ziet waar ze moeten corrigeren.
         $this->addError(
             'dateFrom',
             $firstFailureMessage ?? 'De verlof- of ziektemelding kon niet worden opgeslagen.'
         );
 
         return null;
+    }
+
+    /**
+     * Open de bevestigingsmodal voor verlof-annulering.
+     * Zet het ID van de te annuleren entry zodat de modal opent.
+     * Requirements: 10.5, 10.6
+     */
+    public function confirmCancelLeave(int $entryId): void
+    {
+        $this->cancellingEntryId = $entryId;
+    }
+
+    /**
+     * Sluit de bevestigingsmodal zonder te annuleren.
+     */
+    public function dismissCancelModal(): void
+    {
+        $this->cancellingEntryId = null;
+    }
+
+    /**
+     * Annuleer een verlofaanvraag (soft-delete).
+     *
+     * Stappen:
+     *  1. Resolve actor; null → 403.
+     *  2. Zoek de werkregel (inclusief soft-deleted check).
+     *  3. Controleer dat de entry van de huidige gebruiker is.
+     *  4. Controleer dat de entry NIET goedgekeurd is (is_finalized=false).
+     *     Bij goedgekeurd verlof: HTTP 409 met code LEAVE_ALREADY_APPROVED.
+     *  5. Soft-delete de werkregel.
+     *  6. Schrijf audit-event LEAVE_CANCELLED.
+     *  7. Dispatch toast (success) en leave-cancelled event.
+     *  8. Reset de modal-state.
+     *
+     * Requirements: 10.5, 10.6, 10.7, 10.8, 10.9
+     */
+    public function cancelLeave(): void
+    {
+        /** @var User|null $actor */
+        $actor = Auth::user();
+        if ($actor === null) {
+            abort(403, 'Geen toegang.');
+        }
+
+        if ($this->cancellingEntryId === null) {
+            return;
+        }
+
+        $entry = WorkEntry::query()
+            ->where('id', $this->cancellingEntryId)
+            ->where('employee_id', (int) $actor->id)
+            ->whereIn('type', ['LEAVE', 'SICK', 'HOLIDAY'])
+            ->whereNull('deleted_at')
+            ->first();
+
+        if ($entry === null) {
+            $this->cancellingEntryId = null;
+            $this->dispatch('toast', variant: 'error', message: 'Verlofaanvraag niet gevonden.');
+
+            return;
+        }
+
+        // HTTP 409: goedgekeurd verlof kan niet geannuleerd worden (req 10.8)
+        if ((bool) $entry->is_finalized === true) {
+            $this->cancellingEntryId = null;
+            abort(409, json_encode([
+                'code' => 'LEAVE_ALREADY_APPROVED',
+                'message' => 'Dit verlof is al goedgekeurd en kan niet meer geannuleerd worden.',
+            ]));
+        }
+
+        // Soft-delete de werkregel (req 10.7)
+        $entry->delete();
+
+        // Audit-event LEAVE_CANCELLED (req 10.7)
+        AuditEvent::create([
+            'organization_id' => (int) $actor->organization_id,
+            'actor_id' => (int) $actor->id,
+            'action' => 'LEAVE_CANCELLED',
+            'target_type' => 'work_entry',
+            'target_id' => (int) $entry->id,
+            'before_data' => [
+                'entry_date' => $entry->entry_date?->toDateString(),
+                'type' => $entry->type,
+                'is_finalized' => $entry->is_finalized,
+            ],
+            'after_data' => [
+                'deleted_at' => now()->toIso8601String(),
+            ],
+            'ip_address' => request()->ip(),
+            'user_agent' => request()->userAgent(),
+        ]);
+
+        // Reset modal-state
+        $this->cancellingEntryId = null;
+
+        // Toast (success) — req 10.7
+        $this->dispatch('toast', variant: 'success', message: 'Verlofaanvraag geannuleerd.');
+
+        // Dispatch leave-cancelled event zodat andere componenten kunnen refreshen
+        $this->dispatch('leave-cancelled', entryId: (int) $entry->id);
     }
 
     public function render(): View

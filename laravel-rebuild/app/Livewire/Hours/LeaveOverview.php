@@ -6,6 +6,7 @@ namespace App\Livewire\Hours;
 
 use App\Models\WorkEntry;
 use App\Models\User;
+use App\Services\LeaveNotificationService;
 use Illuminate\Contracts\View\View;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Auth;
@@ -105,6 +106,13 @@ final class LeaveOverview extends Component
 
         $entry->update(['is_finalized' => true]);
 
+        // Dispatch leave_approved e-mail naar de medewerker (Req 13.1).
+        try {
+            app(LeaveNotificationService::class)->notifyApproved($entry, $user);
+        } catch (\Throwable) {
+            // E-mail dispatch mag approve-actie niet blokkeren.
+        }
+
         $this->confirmation = 'Verlofmelding goedgekeurd.';
     }
 
@@ -145,6 +153,15 @@ final class LeaveOverview extends Component
             : $rejectionNote;
 
         $entry->update(['note' => $newNote]);
+
+        // Dispatch leave_rejected e-mail naar de medewerker VÓÓR soft-delete (Req 13.2).
+        try {
+            $reason = $rejectionNote;
+            app(LeaveNotificationService::class)->notifyRejected($entry, $user, $reason);
+        } catch (\Throwable) {
+            // E-mail dispatch mag reject-actie niet blokkeren.
+        }
+
         $entry->delete(); // Soft-delete
 
         $this->confirmation = 'Verlofmelding afgewezen.';
